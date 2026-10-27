@@ -1,0 +1,10 @@
+# Entorno virtual
+venv/
+__pycache__/
+.env
+
+# Base de datos vectorial local
+vector_db/
+
+# Datasets pesados (opcional, si prefieres descargarlos con un script)
+data/*.csv
