@@ -23,8 +23,9 @@ simpsons-rag-trivia/
 ├── vector_db/             # Base de datos vectorial persistida localmente (ignorada en git)
 ├── src/                   # Código fuente del proyecto
 │   ├── __init__.py
-│   ├── ingest.py          # Script de chunking, vectorización e ingesta de datos
-│   └── trivia_gen.py      # Script principal para generación y juego de trivias
+│   ├── ingest.py          		# Script de chunking, vectorización e ingesta de datos
+│   └── trivia_gen.py      		# Script principal para generación y juego de trivias
+│   └── crosscheck_chunks      # Script para comprobar y mostrar chunks por episodio/temporada
 │
 ├── .gitignore             # Archivos excluidos del control de versiones
 ├── requirements.txt       # Dependencias del proyecto
