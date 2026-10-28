@@ -1,15 +1,15 @@
-"""Inspector de chunks de la base vectorial de SimpsonsTriviaRAG.
+"""Chunk inspector for the SimpsonsTriviaRAG vector database.
 
-Lee directamente de ChromaDB (sin llamadas a la API de embeddings: no consume cuota).
+Reads directly from ChromaDB (no embedding API calls: consumes no quota).
 
-Uso:
-    python src/crosscheck_chunks.py                          # resumen global + tabla por episodio
-    python src/crosscheck_chunks.py --season 3               # solo la temporada 3
-    python src/crosscheck_chunks.py --episode 43             # solo el episodio con episode_id=43
-    python src/crosscheck_chunks.py --show --episode 43      # imprime el TEXTO de sus chunks
-    python src/crosscheck_chunks.py --show --season 2        # imprime los chunks de toda la temporada
-    python src/crosscheck_chunks.py --compare                 # episodios que DEBERÍAN estar (según el CSV
-                                                      # y MAX_SEASON) y no están en la BD
+Usage:
+    python src/crosscheck_chunks.py                          # global summary + per-episode table
+    python src/crosscheck_chunks.py --season 3               # season 3 only
+    python src/crosscheck_chunks.py --episode 43             # only the episode with episode_id=43
+    python src/crosscheck_chunks.py --show --episode 43      # prints the TEXT of its chunks
+    python src/crosscheck_chunks.py --show --season 2        # prints the chunks of a whole season
+    python src/crosscheck_chunks.py --compare                 # episodes that SHOULD be present (per the
+                                                      # CSV and MAX_SEASON) but are missing from the DB
 """
 import os
 import argparse
@@ -17,9 +17,9 @@ import pandas as pd
 import chromadb
 
 DB_PATH = "vector_db"
-COLLECTION_NAME = "langchain"   # nombre por defecto que usa langchain-chroma
+COLLECTION_NAME = "langchain"   # default collection name used by langchain-chroma
 EPISODES_CSV = "data/simpsons_episodes.csv"
-MAX_SEASON = 13                 # debe coincidir con ingest.py
+MAX_SEASON = 13                 # must match ingest.py
 
 
 def load_chunks():
@@ -60,12 +60,12 @@ def print_stats(chunks, season=None, episode=None):
         })
 
     if not rows:
-        print("No hay chunks que coincidan con el filtro.")
+        print("No chunks match the filter.")
         return
 
     rows.sort(key=lambda r: (r["season"], r["episode_id"]))
     counts = [r["chunks"] for r in rows]
-    print(f"{'T':>2} {'episode_id':>10}  {'chunks':>6}  título")
+    print(f"{'S':>2} {'episode_id':>10}  {'chunks':>6}  title")
     print("-" * 70)
     for r in rows:
         flag = " ⚠️" if r["chunks"] < 10 else ""
@@ -73,15 +73,15 @@ def print_stats(chunks, season=None, episode=None):
               f"{r['title']}{flag}")
 
     print("-" * 70)
-    print(f"Episodios listados: {len(rows)}")
-    print(f"Chunks: total={sum(counts)}, media={sum(counts)/len(counts):.1f}, "
-          f"mín={min(counts)}, máx={max(counts)}")
+    print(f"Episodes listed: {len(rows)}")
+    print(f"Chunks: total={sum(counts)}, average={sum(counts)/len(counts):.1f}, "
+          f"min={min(counts)}, max={max(counts)}")
     low = [r for r in rows if r["chunks"] < 10]
     if low:
-        print(f"\n⚠️  Episodios con menos de 10 chunks (⚠️ arriba):")
+        print(f"\n⚠️  Episodes with fewer than 10 chunks (⚠️ above):")
         for r in low:
-            print(f"   T{r['season']} — {r['episode_id']} «{r['title']}» "
-                  f"({r['chunks']} chunks, última línea {r['lines']})")
+            print(f"   S{r['season']} — {r['episode_id']} \"{r['title']}\" "
+                  f"({r['chunks']} chunks, last line {r['lines']})")
 
 
 def print_chunks(chunks, season=None, episode=None, limit_lines=None):
@@ -95,22 +95,22 @@ def print_chunks(chunks, season=None, episode=None, limit_lines=None):
         if episode is not None and eid != episode:
             continue
         print(f"\n{'=' * 70}")
-        print(f"T{e.get('season')} — episodio {eid} «{e.get('episode_title', '?')}» "
+        print(f"S{e.get('season')} — episode {eid} \"{e.get('episode_title', '?')}\" "
               f"({len(echunks)} chunks)")
         print(f"{'=' * 70}")
         echunks.sort(key=lambda c: c.get("line_start", 0))
         for i, c in enumerate(echunks, 1):
             print(f"\n--- chunk {i}/{len(echunks)} "
-                  f"[líneas {c.get('line_start')}–{c.get('line_end')}] ---")
+                  f"[lines {c.get('line_start')}–{c.get('line_end')}] ---")
             print(c["text"])
             shown += 1
-    print(f"\n({shown} chunks mostrados)")
+    print(f"\n({shown} chunks shown)")
 
 
 def print_missing(chunks):
-    """Compara los episodios esperados (CSV + MAX_SEASON) con los presentes en la BD."""
+    """Compares the expected episodes (CSV + MAX_SEASON) with those present in the DB."""
     if not os.path.exists(EPISODES_CSV):
-        print(f"No se encuentra {EPISODES_CSV}; imposible comparar.")
+        print(f"Cannot find {EPISODES_CSV}; comparison impossible.")
         return
     eps = pd.read_csv(EPISODES_CSV)
     eps = eps[eps["season"] <= MAX_SEASON]
@@ -119,38 +119,38 @@ def print_missing(chunks):
     missing = sorted(expected - present)
     extra = sorted(present - expected)
 
-    print(f"Esperados (T1-{MAX_SEASON}): {len(expected)} episodios")
-    print(f"Presentes en la BD: {len(present)} episodios")
+    print(f"Expected (S1-{MAX_SEASON}): {len(expected)} episodes")
+    print(f"Present in the DB: {len(present)} episodes")
     if missing:
-        print(f"\n❌ Sin ingerir ({len(missing)}):")
+        print(f"\n❌ Not ingested yet ({len(missing)}):")
         titles = eps.set_index("id")["title"]
         for eid in missing:
             season = eps.loc[eps["id"] == eid, "season"].iloc[0]
-            print(f"   T{season} — {eid} «{titles[eid]}»")
+            print(f"   S{season} — {eid} \"{titles[eid]}\"")
     else:
-        print("\n✅ Todos los episodios esperados están en la BD.")
+        print("\n✅ All expected episodes are in the DB.")
     if extra:
-        print(f"\n⚠️ Episodios en la BD fuera de rango: {extra}")
+        print(f"\n⚠️ Episodes in the DB outside the range: {extra}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Inspector de chunks (ChromaDB local)")
-    parser.add_argument("--season", type=int, help="Filtrar por temporada (p. ej. 3)")
+    parser = argparse.ArgumentParser(description="Chunk inspector (local ChromaDB)")
+    parser.add_argument("--season", type=int, help="Filter by season (e.g. 3)")
     parser.add_argument("--episode", type=int,
-                        help="Filtrar por episode_id (el id interno, p. ej. 43)")
+                        help="Filter by episode_id (the internal id, e.g. 43)")
     parser.add_argument("--show", action="store_true",
-                        help="Imprimir el TEXTO de los chunks en vez de solo contar")
+                        help="Print the TEXT of the chunks instead of just counting")
     parser.add_argument("--compare", action="store_true",
-                        help="Listar episodios esperados que faltan en la BD")
+                        help="List expected episodes missing from the DB")
     args = parser.parse_args()
 
     if not os.path.exists(DB_PATH):
-        print(f"❌ No existe la base de datos en ./{DB_PATH}")
+        print(f"❌ No database found at ./{DB_PATH}")
         return
 
     chunks = load_chunks()
     if not chunks:
-        print("La colección existe pero está vacía.")
+        print("The collection exists but it is empty.")
         return
 
     if args.compare:

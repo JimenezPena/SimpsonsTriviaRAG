@@ -1,12 +1,12 @@
 """Simpsons Trivia Generator (RAG) — draft v1.
 
-Modos:
-  1) Pregunta de trivia: muestrea un chunk aleatorio de la BD vectorial y el LLM
-     genera una pregunta con 4 opciones y su respuesta (revelada tras responder).
-  2) Consulta libre: haces una pregunta, se recuperan los chunks más similares y
-     el LLM responde citando episodio y temporada.
+Modes:
+  1) Trivia question: samples a random chunk from the vector DB and the LLM
+     generates a question with 4 options and its answer (revealed after you answer).
+  2) Free-form Q&A: you ask a question, the most similar chunks are retrieved
+     and the LLM answers citing the episode and season.
 
-Cero coste de ingesta: la BD ya está persistida; solo 1 embedding por consulta.
+Zero ingestion cost: the DB is already persisted; only 1 embedding per query.
 """
 import os
 import json
@@ -18,12 +18,12 @@ from dotenv import load_dotenv
 from langchain_chroma import Chroma
 from langchain_core.embeddings import Embeddings
 
-# ==================== CONFIGURACIÓN ====================
-DB_PATH = "vector_db"      # la BD creada por ingest_batch.py
+# ==================== CONFIGURATION ====================
+DB_PATH = "vector_db"      # the DB created by ingest.py
 COLLECTION_NAME = "langchain"
 LLM_MODEL = "gemini-2.5-flash"
 MAX_SEASON = 13
-TOP_K = 3                        # chunks recuperados en consulta libre
+TOP_K = 3                        # chunks retrieved in free-form Q&A
 # =======================================================
 
 load_dotenv()
@@ -31,7 +31,7 @@ API_KEY = os.environ["GOOGLE_API_KEY"]
 
 
 # ----------------------------------------------------------------------------
-# Embeddings (misma clase que ingest_batch.py: copia compartida idealmente)
+# Embeddings (same class as ingest.py: ideally a shared copy)
 # ----------------------------------------------------------------------------
 class BatchedGeminiEmbeddings(Embeddings):
     API_URL = ("https://generativelanguage.googleapis.com/v1beta/models/"
@@ -64,8 +64,8 @@ class BatchedGeminiEmbeddings(Embeddings):
                     data = json.loads(resp.read().decode("utf-8"))
                 embeddings = [e["values"] for e in data.get("embeddings", [])]
                 if len(embeddings) != len(texts):
-                    raise RuntimeError(f"Esperaba {len(texts)} embeddings, "
-                                       f"llegaron {len(embeddings)}")
+                    raise RuntimeError(f"Expected {len(texts)} embeddings, "
+                                       f"got {len(embeddings)}")
                 return embeddings
             except urllib.error.HTTPError as e:
                 if e.code == 429 and attempt < 4:
@@ -73,7 +73,7 @@ class BatchedGeminiEmbeddings(Embeddings):
                     continue
                 raise RuntimeError(f"HTTP {e.code}: "
                                    f"{e.read().decode('utf-8', 'ignore')}") from e
-        raise RuntimeError("Reintentos agotados")
+        raise RuntimeError("Retries exhausted")
 
     def embed_documents(self, texts):
         return self._batch_embed(texts, "RETRIEVAL_DOCUMENT")
@@ -83,7 +83,7 @@ class BatchedGeminiEmbeddings(Embeddings):
 
 
 # ----------------------------------------------------------------------------
-# LLM (REST directo, sin dependencias del SDK)
+# LLM (direct REST, no SDK dependency)
 # ----------------------------------------------------------------------------
 def ask_llm(prompt, system=None):
     payload = {
@@ -91,8 +91,8 @@ def ask_llm(prompt, system=None):
         "generationConfig": {
             "temperature": 0.9,
             "maxOutputTokens": 2048,
-            # gemini-2.5-flash "piensa" antes de responder y sus tokens de
-            # razonamiento se comen el presupuesto de salida: desactivado aquí
+            # gemini-2.5-flash "thinks" before answering and its reasoning
+            # tokens eat the output budget: disabled here
             "thinkingConfig": {"thinkingBudget": 0},
         },
     }
@@ -114,7 +114,7 @@ def ask_llm(prompt, system=None):
 
 
 # ----------------------------------------------------------------------------
-# Base vectorial
+# Vector store
 # ----------------------------------------------------------------------------
 def load_vector_store():
     return Chroma(
@@ -125,10 +125,10 @@ def load_vector_store():
 
 
 def random_chunk(vector_store, season=None):
-    """Muestrea un chunk aleatorio (opcionalmente de una temporada concreta)."""
+    """Samples a random chunk (optionally from a specific season)."""
     where = {"season": {"$eq": season}} if season else None
-    # simulación de sample: pedir en orden "aleatorio" de Chroma no existe;
-    # pedimos un offset aleatorio sobre el total de la colección
+    # sample simulation: Chroma has no "random" ordering;
+    # we pick a random offset over the total of the collection
     col = vector_store._collection
     total = col.count()
     offset = random.randint(0, max(total - 1, 0))
@@ -136,18 +136,18 @@ def random_chunk(vector_store, season=None):
                   include=["documents", "metadatas"])
     docs, metas = res.get("documents", []), res.get("metadatas", [])
     if not docs:
-        # reintentar sin where o avisar
+        # retry without where, or bail out
         res = col.get(limit=1, offset=offset, include=["documents", "metadatas"])
         docs, metas = res.get("documents", []), res.get("metadatas", [])
         if not docs:
-            raise RuntimeError("La colección está vacía.")
+            raise RuntimeError("The collection is empty.")
     return docs[0], metas[0]
 
 
 def retrieve(vector_store, question, season=None):
-    """Consulta libre: recupera los TOP_K chunks más parecidos a la pregunta."""
-    # langchain-chroma usa `filter` en su API pública (con sintaxis where de
-    # Chroma); pasar `where` causa errores raros según la versión
+    """Free-form Q&A: retrieves the TOP_K chunks most similar to the question."""
+    # langchain-chroma uses `filter` in its public API (with Chroma's where
+    # syntax); passing `where` causes weird errors depending on the version
     kwargs = {"k": TOP_K}
     if season is not None:
         kwargs["filter"] = {"season": {"$eq": season}}
@@ -155,100 +155,92 @@ def retrieve(vector_store, question, season=None):
 
 
 # ----------------------------------------------------------------------------
-# Modos de juego
+# Game modes
 # ----------------------------------------------------------------------------
 TRIVIA_SYSTEM = (
-    "Eres un experto en Los Simpson (temporadas clásicas). Generas preguntas "
-    "de trivia a partir de un fragmento de guion que se te da. La pregunta debe "
-    "tener respuesta objetiva DENTRO del fragmento: nombres, objetos, lugares, "
-    "qué dice un personaje o qué ocurre.\n"
-    "IDIOMA: escribe TODO en español neutro. El guion está en inglés: traduce "
-    "de forma natural e idiomática, nunca literal. Si citas una frase exacta, "
-    "pon tu traducción y el original inglés entre paréntesis.\n"
-    "Devuelve EXACTAMENTE este formato:\n"
-    "PREGUNTA: ...\nA) ...\nB) ...\nC) ...\nD) ...\n"
-    "RESPUESTA: letra) texto\nCURIOSIDAD: una línea breve y divertida "
-    "relacionada con el fragmento."
+    "You are an expert on The Simpsons (classic seasons). You generate trivia "
+    "questions from a script fragment you are given. The question must have an "
+    "objective answer WITHIN the fragment: names, objects, places, what a "
+    "character says, or what happens. Return EXACTLY this format:\n"
+    "QUESTION: ...\nA) ...\nB) ...\nC) ...\nD) ...\n"
+    "ANSWER: letter) text\nFUN FACT: one short, fun line related to the fragment."
 )
 
 
 def play_trivia(vector_store, season=None):
     chunk, meta = random_chunk(vector_store, season)
-    source = f"T{meta['season']} «{meta['episode_title']}»"
-    print(f"\n🎯 Pregunta basada en {source}\n")
+    source = f"S{meta['season']} \"{meta['episode_title']}\""
+    print(f"\n🎯 Question based on {source}\n")
 
-    prompt = (f"Fragmento del guion (temporada {meta['season']}, episodio "
-              f"«{meta['episode_title']}»):\n\n{chunk}\n\n"
-              f"Genera la pregunta de trivia.")
+    prompt = (f"Script fragment (season {meta['season']}, episode "
+              f"\"{meta['episode_title']}\"):\n\n{chunk}\n\n"
+              f"Generate the trivia question.")
     try:
         out = ask_llm(prompt, system=TRIVIA_SYSTEM)
     except RuntimeError as e:
-        print(f"⚠️  Error del LLM: {e}")
+        print(f"⚠️  LLM error: {e}")
         return
 
-    # ocultar la línea de respuesta hasta que el jugador conteste
+    # hide the answer line until the player answers
     hidden, answer_line = [], None
     for line in out.splitlines():
-        if line.strip().upper().startswith("RESPUESTA:"):
+        if line.strip().upper().startswith("ANSWER:"):
             answer_line = line
             continue
         hidden.append(line)
 
     if answer_line is None:
-        # salida truncada o formato roto: mostrar lo que haya y avisar
+        # truncated output or broken format: show what we got and warn
         print("\n".join(hidden))
-        print("\n⚠️  El LLM no generó la línea RESPUESTA (¿salida cortada?). "
-              "Pregunta descartada, prueba otra vez.")
+        print("\n⚠️  The LLM did not generate the ANSWER line (truncated output?). "
+              "Question discarded, try again.")
         return
 
     print("\n".join(hidden))
 
-    user = input("\nTu respuesta (A/B/C/D): ").strip().upper()
+    user = input("\nYour answer (A/B/C/D): ").strip().upper()
     print(f"\n{answer_line}")
-    correct = user == answer_line.split("RESPUESTA:")[1].strip()[:1].upper()
-    print("🎉 ¡Correcto!" if correct else "😢 ¡Fallaste!")
-    print(f"📺 Fuente: {source}")
+    correct = user == answer_line.split("ANSWER:")[1].strip()[:1].upper()
+    print("🎉 Correct!" if correct else "😢 Wrong!")
+    print(f"📺 Source: {source}")
 
 
 ANSWER_SYSTEM = (
-    "Responde preguntas sobre Los Simpson usando SOLO el contexto de guion "
-    "proporcionado. Sé breve y directo (máx. 4 frases).\n"
-    "IDIOMA: responde SIEMPRE en español neutro. El guion está en inglés: "
-    "traduce de forma natural e idiomática, nunca literal. Si citas una frase "
-    "exacta, pon tu traducción y el original inglés entre paréntesis.\n"
-    "Si el contexto no contiene la respuesta, dilo claramente en vez de "
-    "inventar. Termina citando el episodio de donde sale la información."
+    "Answer questions about The Simpsons using ONLY the script context "
+    "provided. Be brief and direct (max 4 sentences).\n"
+    "If the context does not contain the answer, say so clearly instead of "
+    "making it up. Finish by citing the episode the information comes from."
 )
 
 
 def ask_anything(vector_store, season=None):
-    question = input("\n❓ Tu pregunta sobre Los Simpson: ").strip()
+    question = input("\n❓ Your question about The Simpsons: ").strip()
     if not question:
         return
     results = retrieve(vector_store, question, season)
     if not results:
-        print("No encontré nada para esa pregunta.")
+        print("I couldn't find anything for that question.")
         return
 
     context = "\n\n---\n\n".join(
-        f"[Temporada {doc.metadata['season']}, «{doc.metadata['episode_title']}»]\n"
+        f"[Season {doc.metadata['season']}, \"{doc.metadata['episode_title']}\"]\n"
         f"{doc.page_content}"
         for doc, score in results
     )
-    prompt = f"Contexto:\n\n{context}\n\nPregunta: {question}"
+    prompt = f"Context:\n\n{context}\n\nQuestion: {question}"
     try:
         out = ask_llm(prompt, system=ANSWER_SYSTEM)
     except RuntimeError as e:
-        print(f"⚠️  Error del LLM: {e}")
+        print(f"⚠️  LLM error: {e}")
         return
     print(f"\n💬 {out}\n")
     for doc, score in results:
         m = doc.metadata
-        print(f"   📺 [{m['season']}] «{m['episode_title']}» (distancia {score:.3f})")
+        print(f"   📺 [{m['season']}] \"{m['episode_title']}\" (distance {score:.3f})")
 
 
 # ----------------------------------------------------------------------------
-# Menú principal
+# Main menu
 # ----------------------------------------------------------------------------
 def main():
     print("🍩 Simpsons Trivia Generator (RAG) — draft v1")
@@ -257,11 +249,11 @@ def main():
 
     while True:
         print("\n" + "=" * 50)
-        print("1) 🎯 Nueva pregunta de trivia")
-        print("2) 💬 Consulta libre (RAG)")
-        print(f"3) 🎬 Temporada elegida: {season if season else 'todas'}")
-        print("4) 🚪 Salir")
-        choice = input("Opción: ").strip()
+        print("1) 🎯 New trivia question")
+        print("2) 💬 Free-form Q&A (RAG)")
+        print(f"3) 🎬 Selected season: {season if season else 'all'}")
+        print("4) 🚪 Exit")
+        choice = input("Option: ").strip()
 
         try:
             if choice == "1":
@@ -269,17 +261,17 @@ def main():
             elif choice == "2":
                 ask_anything(vector_store, season)
             elif choice == "3":
-                raw = input("Temporada (1-13, vacío = todas): ").strip()
+                raw = input("Season (1-13, empty = all): ").strip()
                 season = int(raw) if raw else None
             elif choice == "4":
-                print("¡Hasta la próxima! 🍺")
+                print("See you next time! 🍺")
                 break
             else:
-                print("Opción no válida.")
+                print("Invalid option.")
         except Exception as e:
             import traceback
             print(f"⚠️  {e}")
-            traceback.print_exc()  # origen exacto del fallo, no solo el mensaje
+            traceback.print_exc()  # exact origin of the failure, not just the message
 
 
 if __name__ == "__main__":

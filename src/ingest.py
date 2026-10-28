@@ -7,37 +7,37 @@ from langchain_chroma import Chroma
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_core.documents import Document
 
-# ==================== CONFIGURACIÓN ====================
+# ==================== CONFIGURATION ====================
 DATA_LINES_PATH = "data/simpsons_script_lines.csv"
 DATA_EPISODES_PATH = "data/simpsons_episodes.csv"
 DB_PATH = "vector_db"
 CHECKPOINT_PATH = os.path.join(DB_PATH, "ingested_episodes.json")
 
-MAX_SEASON = 13          # Ignora cualquier línea de una temporada > 13
-CHUNK_SIZE = 20          # Líneas de diálogo por chunk
-CHUNK_OVERLAP = 5        # Solape entre chunks consecutivos (dentro de la escena)
-SCENE_CONTEXT_LINES = 3  # Líneas finales de la escena anterior que se anteponen
-                          # al primer chunk de cada escena nueva (continuidad de gags)
-BATCH_SIZE = 100         # Textos por llamada a la API (límite de Google: 100)
-SLEEP_BETWEEN_BATCHES = 20.0  # Ahora el lote es un episodio (~33 chunks ≈ 9k tokens):
-                              # 3 episodios/min ≈ 27k TPM, dentro del límite de 30k.
-                              # Ingesta completa: ~291 episodios ≈ 1h40m
+MAX_SEASON = 13          # Discard any line from a season > 13
+CHUNK_SIZE = 20          # Dialogue lines per chunk
+CHUNK_OVERLAP = 5        # Overlap between consecutive chunks (within a scene)
+SCENE_CONTEXT_LINES = 3  # Last lines of the previous scene prepended to the
+                          # first chunk of each new scene (gag continuity)
+BATCH_SIZE = 100         # Texts per API call (Google limit: 100)
+SLEEP_BETWEEN_BATCHES = 20.0  # The batch is now one episode (~33 chunks ≈ 9k tokens):
+                              # 3 episodes/min ≈ 27k TPM, within the 30k limit.
+                              # Full ingestion: ~291 episodes ≈ 1h40m
 # =======================================================
 
 load_dotenv()
 
 
 def load_data():
-    """Carga el CSV de líneas y lo une con el de episodios para traer season y title."""
-    print("📖 Leyendo los CSV...")
+    """Loads the script-lines CSV and joins it with the episodes CSV to bring in season and title."""
+    print("📖 Reading the CSV files...")
     lines = pd.read_csv(DATA_LINES_PATH, dtype={"speaking_line": str, "word_count": str})
     episodes = pd.read_csv(DATA_EPISODES_PATH)
 
-    # speaking_line viene como string "true"/"false" en el CSV original
+    # speaking_line comes as the string "true"/"false" in the original CSV
     lines = lines[lines["speaking_line"].astype(str).str.lower() == "true"]
     lines = lines.dropna(subset=["spoken_words"])
 
-    # JOIN: episode_id (líneas) -> id (episodios). Trae season, title y number_in_series.
+    # JOIN: episode_id (lines) -> id (episodes). Brings season, title and number_in_series.
     df = lines.merge(
         episodes[["id", "season", "title", "number_in_series"]],
         how="inner",
@@ -46,17 +46,17 @@ def load_data():
     )
     df = df.rename(columns={"id": "episode_row_id"})
 
-    # Filtro de temporadas: descarta todo lo que supere MAX_SEASON
+    # Season filter: discard anything above MAX_SEASON
     df = df[df["season"] <= MAX_SEASON].copy()
 
-    print(f"🧹 {len(df)} líneas de diálogo en temporadas 1-{MAX_SEASON}, "
-          f"de {df['episode_id'].nunique()} episodios.")
+    print(f"🧹 {len(df)} dialogue lines in seasons 1-{MAX_SEASON}, "
+          f"across {df['episode_id'].nunique()} episodes.")
     return df
 
 
 def build_chunks(df):
-    """Agrupa por episodio, corta cuando cambia la localización (cambio de escena)
-    y crea chunks de ~CHUNK_SIZE líneas con solape de CHUNK_OVERLAP."""
+    """Groups by episode, cuts on location changes (scene changes) and creates
+    chunks of ~CHUNK_SIZE lines with an overlap of CHUNK_OVERLAP."""
     documents = []
 
     for episode_id, ep in df.groupby("episode_id", sort=True):
@@ -64,7 +64,7 @@ def build_chunks(df):
         season = int(ep["season"].iloc[0])
         title = str(ep["title"].iloc[0])
 
-        # 1) Segmentar en escenas: corte cuando cambia location_id
+        # 1) Segment into scenes: cut when location_id changes
         scenes, current = [], []
         last_loc = None
         for _, row in ep.iterrows():
@@ -77,39 +77,39 @@ def build_chunks(df):
         if current:
             scenes.append(current)
 
-        # 2) Dentro de cada escena, trocear con solape; el primer chunk de cada
-        #    escena lleva las últimas líneas de la escena anterior como contexto
-        prev_tail = []  # últimas líneas de la escena anterior (continuidad de gags)
+        # 2) Within each scene, split with overlap; the first chunk of each
+        #    scene carries the last lines of the previous scene as context
+        prev_tail = []  # last lines of the previous scene (gag continuity)
         for scene in scenes:
             scene = list(scene)
             step = CHUNK_SIZE - CHUNK_OVERLAP
             for start in range(0, len(scene), step):
                 chunk = scene[start:start + CHUNK_SIZE]
 
-                # Contexto previo solo en el primer chunk de la escena
+                # Previous context only in the first chunk of the scene
                 if start == 0 and prev_tail:
                     context_lines = "\n".join(
-                        f"{r['raw_character_text'] or 'Alguien'}: {r['spoken_words']}"
+                        f"{r['raw_character_text'] or 'Someone'}: {r['spoken_words']}"
                         for r in prev_tail
                     )
-                    dialog = f"[contexto previo]\n{context_lines}\n---\n" + "\n".join(
-                        f"{r['raw_character_text'] or 'Alguien'}: {r['spoken_words']}"
+                    dialog = f"[previous context]\n{context_lines}\n---\n" + "\n".join(
+                        f"{r['raw_character_text'] or 'Someone'}: {r['spoken_words']}"
                         for r in chunk
                     )
                 else:
                     dialog = "\n".join(
-                        f"{r['raw_character_text'] or 'Alguien'}: {r['spoken_words']}"
+                        f"{r['raw_character_text'] or 'Someone'}: {r['spoken_words']}"
                         for r in chunk
                     )
 
-                # Contexto + chunk no debe superar el chunk normal + margen
+                # Context + chunk should not exceed the normal chunk + margin
                 prev_tail = scene[-SCENE_CONTEXT_LINES:]
                 locations = sorted({str(r["raw_location_text"]) for r in chunk})
                 characters = sorted({str(r["raw_character_text"]) for r in chunk})
 
                 page_content = (
-                    f"[Los Simpson - Temporada {season}, Episodio: '{title}']\n"
-                    f"Escena en {', '.join(locations)}\n\n{dialog}"
+                    f"[The Simpsons - Season {season}, Episode: '{title}']\n"
+                    f"Scene at {', '.join(locations)}\n\n{dialog}"
                 )
                 metadata = {
                     "season": season,
@@ -122,12 +122,12 @@ def build_chunks(df):
                 }
                 documents.append(Document(page_content=page_content, metadata=metadata))
 
-    print(f"📄 {len(documents)} chunks generados.")
+    print(f"📄 {len(documents)} chunks generated.")
     return documents
 
 
 def load_checkpoint():
-    """Episodios completados en ejecuciones anteriores."""
+    """Episodes completed in previous runs."""
     if os.path.exists(CHECKPOINT_PATH):
         with open(CHECKPOINT_PATH) as f:
             return set(json.load(f))
@@ -138,11 +138,11 @@ def save_checkpoint(done_episodes):
     tmp = CHECKPOINT_PATH + ".tmp"
     with open(tmp, "w") as f:
         json.dump(sorted(done_episodes), f)
-    os.replace(tmp, CHECKPOINT_PATH)  # escritura atómica
+    os.replace(tmp, CHECKPOINT_PATH)  # atomic write
 
 
 def chroma_episode_counts(vector_store):
-    """Número de chunks por episode_id que ya viven en Chroma."""
+    """Number of chunks per episode_id already living in Chroma."""
     existing = vector_store.get(include=["metadatas"])
     counts = {}
     for m in existing.get("metadatas", []):
@@ -153,37 +153,37 @@ def chroma_episode_counts(vector_store):
 
 
 def ingest(documents):
-    """Vectoriza temporada a temporada, con checkpoint por episodio.
+    """Vectorizes season by season, with an episode-level checkpoint.
 
-    - Un episodio en el checkpoint ya está completo: se omite.
-    - Un episodio presente en Chroma pero NO en el checkpoint quedó a medias
-      por un 429: se borra y se reinserta entero.
-    - Cualquier error de cuota interrumpe limpiamente y guarda el progreso.
+    - An episode in the checkpoint is already complete: it is skipped.
+    - An episode present in Chroma but NOT in the checkpoint was left half-done
+      by a 429: it is deleted and re-ingested whole.
+    - Any quota error interrupts cleanly and saves progress.
     """
-    print("⚡ Generando embeddings y guardando en ChromaDB...")
-    embeddings = GoogleGenerativeAIEmbeddings(model="gemini-embedding-2")  #alternativa: gemini-embedding-001
+    print("⚡ Generating embeddings and saving to ChromaDB...")
+    embeddings = GoogleGenerativeAIEmbeddings(model="gemini-embedding-2")  # alternative: gemini-embedding-001
     vector_store = Chroma(embedding_function=embeddings, persist_directory=DB_PATH)
 
     done = load_checkpoint()
     if done:
-        print(f"♻️  Checkpoint: {len(done)} episodios ya completados, se retoma desde ahí.")
+        print(f"♻️  Checkpoint: {len(done)} episodes already completed, resuming from there.")
 
     counts = chroma_episode_counts(vector_store)
     for eid in counts:
         if eid not in done:
-            print(f"🧯 Episodio {eid} quedó a medias (429 previo): se reingesta entero.")
+            print(f"🧯 Episode {eid} was left half-done (previous 429): re-ingesting it whole.")
             vector_store.delete(where={"episode_id": eid})
 
     pending = [d for d in documents if d.metadata["episode_id"] not in done]
-    print(f"📄 {len(pending)} chunks pendientes de {len(documents)} totales.")
+    print(f"📄 {len(pending)} chunks pending out of {len(documents)} total.")
 
-    # Iterar temporada -> episodio: el checkpoint se marca EPISODIO a EPISODIO,
-    # justo cuando el último lote de ese episodio se ha ingestado con éxito.
+    # Iterate season -> episode: the checkpoint is marked EPISODE by EPISODE,
+    # right when the last batch of that episode has been ingested successfully.
     seasons = sorted({d.metadata["season"] for d in pending})
     for season in seasons:
         season_pending = [d for d in pending if d.metadata["season"] == season]
         episodes = sorted({d.metadata["episode_id"] for d in season_pending})
-        print(f"🎬 Temporada {season}: {len(episodes)} episodios, {len(season_pending)} chunks")
+        print(f"🎬 Season {season}: {len(episodes)} episodes, {len(season_pending)} chunks")
 
         for ep_n, eid in enumerate(episodes, 1):
             ep_docs = [d for d in season_pending if d.metadata["episode_id"] == eid]
@@ -192,29 +192,29 @@ def ingest(documents):
                 try:
                     vector_store.add_documents(batch)
                 except Exception as e:
-                    print(f"⚠️  Error en el episodio {eid} (temporada {season}): {e}")
-                    print(f"💾 Progreso guardado ({len(done)} episodios). Relanza el "
-                          f"script: retomará en el episodio {eid}, T{season}.")
+                    print(f"⚠️  Error in episode {eid} (season {season}): {e}")
+                    print(f"💾 Progress saved ({len(done)} episodes). Relaunch the "
+                          f"script: it will resume at episode {eid}, S{season}.")
                     save_checkpoint(done)
                     return
                 time.sleep(SLEEP_BETWEEN_BATCHES)
 
-            # Episodio completo: checkpoint inmediato
+            # Episode complete: immediate checkpoint
             done.add(eid)
             save_checkpoint(done)
-            print(f"   ✅ T{season}x{ep_n}/{len(episodes)} — episodio {eid} "
+            print(f"   ✅ S{season}x{ep_n}/{len(episodes)} — episode {eid} "
                   f"«{ep_docs[0].metadata['episode_title']}» "
-                  f"({len(done)} episodios, {len(ep_docs)} chunks)")
+                  f"({len(done)} episodes, {len(ep_docs)} chunks)")
 
-    print(f"🎉 Ingesta completa: {len(done)} episodios en ./{DB_PATH}!")
+    print(f"🎉 Ingestion complete: {len(done)} episodes in ./{DB_PATH}!")
 
 
 def main():
-    print("🚀 Iniciando la ingesta de datos de Los Simpson...")
+    print("🚀 Starting The Simpsons data ingestion...")
 
     for path in (DATA_LINES_PATH, DATA_EPISODES_PATH):
         if not os.path.exists(path):
-            print(f"❌ Error: no se encuentra {path}. Descárgalo de Kaggle y colócalo ahí.")
+            print(f"❌ Error: cannot find the file at {path}. Download it from Kaggle and place it there.")
             return
 
     df = load_data()
