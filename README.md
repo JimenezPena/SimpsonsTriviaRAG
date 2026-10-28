@@ -9,7 +9,7 @@ A lightweight, **local and free RAG (Retrieval-Augmented Generation)** system th
 * **Orchestration:** Python + LangChain (Chroma integration only)
 * **Embeddings:** Google Gemini API (`gemini-embedding-2`) via `batchEmbedContents` REST calls — up to 100 texts per request, so a full ingestion stays well within the free-tier quotas
 * **Vector Database:** ChromaDB (local persistence)
-* **LLM:** Google Gemini API (`gemini-2.5-flash`) via REST
+* **LLM:** Google Gemini API (`gemini-3.5-flash-lite`) via REST
 * **Dataset:** [The Simpsons Dataset (Kaggle)](https://www.kaggle.com/datasets/prashant111/the-simpsons-dataset/)
 
 ---

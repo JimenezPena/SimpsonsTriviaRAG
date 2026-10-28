@@ -21,7 +21,7 @@ from langchain_core.embeddings import Embeddings
 # ==================== CONFIGURATION ====================
 DB_PATH = "vector_db"      # the DB created by ingest.py
 COLLECTION_NAME = "langchain"
-LLM_MODEL = "gemini-2.5-flash"
+LLM_MODEL = "gemini-3.5-flash-lite"
 MAX_SEASON = 13
 TOP_K = 3                        # chunks retrieved in free-form Q&A
 # =======================================================
@@ -86,31 +86,43 @@ class BatchedGeminiEmbeddings(Embeddings):
 # LLM (direct REST, no SDK dependency)
 # ----------------------------------------------------------------------------
 def ask_llm(prompt, system=None):
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0.9,
-            "maxOutputTokens": 2048,
-            # gemini-2.5-flash "thinks" before answering and its reasoning
-            # tokens eat the output budget: disabled here
-            "thinkingConfig": {"thinkingBudget": 0},
-        },
-    }
-    if system:
-        payload["systemInstruction"] = {"parts": [{"text": system}]}
+    def build_payload(with_thinking=True):
+        gc = {"temperature": 0.9, "maxOutputTokens": 2048}
+        if with_thinking:
+            # Gemini 3 family: thinkingLevel instead of thinkingBudget.
+            # "minimal" = cheapest and fastest. Thinking tokens count inside
+            # maxOutputTokens, so the budget is raised to 2048 + 2048.
+            gc["thinkingConfig"] = {"thinkingLevel": "minimal"}
+            gc["maxOutputTokens"] = 4096
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": gc,
+        }
+        if system:
+            payload["systemInstruction"] = {"parts": [{"text": system}]}
+        return payload
+
     url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
            f"{LLM_MODEL}:generateContent?key={API_KEY}")
-    body = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=body,
-                                 headers={"Content-Type": "application/json"},
-                                 method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(f"LLM HTTP {e.code}: "
-                           f"{e.read().decode('utf-8', 'ignore')}") from e
+
+    # First attempt with the thinking level; if the model rejects the setting
+    # (HTTP 400), retry once without it (some models don't accept it)
+    for with_thinking in (True, False):
+        body = json.dumps(build_payload(with_thinking)).encode("utf-8")
+        req = urllib.request.Request(url, data=body,
+                                     headers={"Content-Type": "application/json"},
+                                     method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "ignore")
+            if e.code == 400 and with_thinking:
+                print(f"⚠️  400 with thinkingConfig; retrying without it: {detail[:200]}")
+                continue
+            raise RuntimeError(f"LLM HTTP {e.code}: {detail}") from e
+    raise RuntimeError("LLM call failed after thinking fallback")
 
 
 # ----------------------------------------------------------------------------
