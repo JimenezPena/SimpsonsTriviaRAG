@@ -5,6 +5,10 @@ __pycache__/
 
 # Base de datos vectorial local
 vector_db/
+batch_vector_db/
 
 # Datasets pesados (opcional, si prefieres descargarlos con un script)
 data/*.csv
+
+.DS_Store
+cron.log
