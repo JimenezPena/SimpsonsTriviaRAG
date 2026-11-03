@@ -1,0 +1,9 @@
+# Runtime-only dependencies for the web app (Render).
+# pandas / langchain / langchain-community / langchain-google-genai are only
+# needed for ingestion, so they are left out to keep the build light.
+chromadb
+langchain-chroma
+langchain-core
+python-dotenv
+flask
+gunicorn

@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: simpsons-trivia-rag
+    runtime: python
+    plan: free
+    buildCommand: bash build.sh
+    # 1 worker: pending trivia answers live in process memory (QUESTIONS dict),
+    # so several workers would make /api/trivia/reveal return 404 at random.
+    # Threads give concurrency; the long timeout covers slow LLM calls.
+    startCommand: gunicorn --workers 1 --threads 4 --timeout 120 --bind 0.0.0.0:$PORT src.app:app
+    healthCheckPath: /api/config
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: GOOGLE_API_KEY
+        sync: false   # set it in the Render dashboard
