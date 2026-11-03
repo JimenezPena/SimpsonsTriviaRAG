@@ -1,4 +1,4 @@
-"""Simpsons Trivia Generator (RAG) — draft v1.
+"""Simpsons Trivia Generator (RAG) — v2.
 
 Modes:
   1) Trivia question: samples a random chunk from the vector DB and the LLM
@@ -6,12 +6,23 @@ Modes:
   2) Free-form Q&A: you ask a question, the most similar chunks are retrieved
      and the LLM answers citing the episode and season.
 
+CLI options (set at startup):
+    python src/trivia_gen.py                    # normal mode
+    python src/trivia_gen.py --verbose         # shows prompts and retrieved chunks
+    python src/trivia_gen.py --verbose --topN=5
+    python src/trivia_gen.py --topN=8          # retrieve top-8, send top-3 to the LLM
+
+--topN widens RETRIEVAL for inspection purposes: the LLM still receives only
+the TOP_K best chunks; --verbose shows the remaining topN - TOP_K chunks that
+were retrieved but NOT sent.
+
 Zero ingestion cost: the DB is already persisted; only 1 embedding per query.
 """
 import os
 import json
 import time
 import random
+import argparse
 import urllib.request
 import urllib.error
 from dotenv import load_dotenv
@@ -19,12 +30,11 @@ from langchain_chroma import Chroma
 from langchain_core.embeddings import Embeddings
 
 # ==================== CONFIGURATION ====================
-#DB_PATH = "vector_db"      	# the DB created by ingest.py
 DB_PATH = "batch_vector_db"      # the DB created by ingest_batch.py
 COLLECTION_NAME = "langchain"
 LLM_MODEL = "gemini-3.5-flash-lite"
 MAX_SEASON = 13
-TOP_K = 3                        # chunks retrieved in free-form Q&A
+TOP_K = 3                        # chunks SENT to the LLM in free-form Q&A
 # =======================================================
 
 load_dotenv()
@@ -157,14 +167,29 @@ def random_chunk(vector_store, season=None):
     return docs[0], metas[0]
 
 
-def retrieve(vector_store, question, season=None):
-    """Free-form Q&A: retrieves the TOP_K chunks most similar to the question."""
+def retrieve(vector_store, question, season=None, k=TOP_K):
+    """Free-form Q&A: retrieves the k chunks most similar to the question."""
     # langchain-chroma uses `filter` in its public API (with Chroma's where
     # syntax); passing `where` causes weird errors depending on the version
-    kwargs = {"k": TOP_K}
+    kwargs = {"k": k}
     if season is not None:
         kwargs["filter"] = {"season": {"$eq": season}}
     return vector_store.similarity_search_with_score(question, **kwargs)
+
+
+def print_chunk(title, doc, score, full=True):
+    """Pretty-prints one retrieved chunk with its distance score."""
+    m = doc.metadata
+    print(f"\n{title}")
+    print(f"   📺 S{m['season']} \"{m['episode_title']}\" "
+          f"(lines {m.get('line_start')}-{m.get('line_end')}, distance {score:.3f})")
+    if full:
+        print(f"   --- chunk text ---")
+        for line in doc.page_content.splitlines():
+            print(f"   {line}")
+    else:
+        snippet = doc.page_content.replace("\n", " ¶ ")
+        print(f"   {snippet[:300]}{'...' if len(snippet) > 300 else ''}")
 
 
 # ----------------------------------------------------------------------------
@@ -180,7 +205,7 @@ TRIVIA_SYSTEM = (
 )
 
 
-def play_trivia(vector_store, season=None):
+def play_trivia(vector_store, season=None, verbose=False):
     chunk, meta = random_chunk(vector_store, season)
     source = f"S{meta['season']} \"{meta['episode_title']}\""
     print(f"\n🎯 Question based on {source}\n")
@@ -188,6 +213,14 @@ def play_trivia(vector_store, season=None):
     prompt = (f"Script fragment (season {meta['season']}, episode "
               f"\"{meta['episode_title']}\"):\n\n{chunk}\n\n"
               f"Generate the trivia question.")
+
+    if verbose:
+        print("=" * 70)
+        print("🔍 VERBOSE — full prompt sent to the LLM")
+        print(f"   system: {TRIVIA_SYSTEM}")
+        print(f"   prompt:\n{prompt}")
+        print("=" * 70)
+
     try:
         out = ask_llm(prompt, system=TRIVIA_SYSTEM)
     except RuntimeError as e:
@@ -226,37 +259,72 @@ ANSWER_SYSTEM = (
 )
 
 
-def ask_anything(vector_store, season=None):
+def ask_anything(vector_store, season=None, verbose=False, top_n=TOP_K):
     question = input("\n❓ Your question about The Simpsons: ").strip()
     if not question:
         return
-    results = retrieve(vector_store, question, season)
+
+    # retrieve the top_n best chunks, but only the TOP_K best go to the LLM
+    results = retrieve(vector_store, question, season, k=max(top_n, TOP_K))
     if not results:
         print("I couldn't find anything for that question.")
         return
 
+    sent, not_sent = results[:TOP_K], results[TOP_K:]
+
+    if verbose:
+        print("\n" + "=" * 70)
+        print(f"🔍 VERBOSE — chunks sent to the LLM (top-{len(sent)})")
+        for i, (doc, score) in enumerate(sent, 1):
+            print_chunk(f"[{i}] SENT", doc, score, full=True)
+        if not_sent:
+            print(f"\n🔍 VERBOSE — retrieved but NOT sent (ranks {TOP_K + 1}-{len(results)})")
+            for i, (doc, score) in enumerate(not_sent, TOP_K + 1):
+                print_chunk(f"[{i}] NOT SENT", doc, score, full=True)
+        print("=" * 70)
+
     context = "\n\n---\n\n".join(
         f"[Season {doc.metadata['season']}, \"{doc.metadata['episode_title']}\"]\n"
         f"{doc.page_content}"
-        for doc, score in results
+        for doc, score in sent
     )
     prompt = f"Context:\n\n{context}\n\nQuestion: {question}"
+
+    if verbose:
+        print("🔍 VERBOSE — full prompt sent to the LLM:")
+        print(f"   system: {ANSWER_SYSTEM}")
+        print(prompt)
+        print("=" * 70)
+
     try:
         out = ask_llm(prompt, system=ANSWER_SYSTEM)
     except RuntimeError as e:
         print(f"⚠️  LLM error: {e}")
         return
     print(f"\n💬 {out}\n")
-    for doc, score in results:
+    # source list (compact) always shown, verbose or not
+    for i, (doc, score) in enumerate(results, 1):
         m = doc.metadata
-        print(f"   📺 [{m['season']}] \"{m['episode_title']}\" (distance {score:.3f})")
+        tag = "→ sent" if i <= TOP_K else "  not sent"
+        print(f"   📺 [{i}] S{m['season']} \"{m['episode_title']}\" "
+              f"(distance {score:.3f}) {tag}")
 
 
 # ----------------------------------------------------------------------------
 # Main menu
 # ----------------------------------------------------------------------------
 def main():
-    print("🍩 Simpsons Trivia Generator (RAG) — draft v1")
+    parser = argparse.ArgumentParser(description="Simpsons Trivia Generator (RAG)")
+    parser.add_argument("--verbose", action="store_true",
+                        help="show the prompts and the retrieved chunks")
+    parser.add_argument("--topN", type=int, default=TOP_K,
+                        help="retrieve the top-N chunks (only TOP_K are sent "
+                             "to the LLM; the rest are shown with --verbose)")
+    args = parser.parse_args()
+
+    print("🍩 Simpsons Trivia Generator (RAG) — v2")
+    print(f"   retrieval: top-{args.topN} | sent to LLM: top-{TOP_K} | "
+          f"verbose: {'ON' if args.verbose else 'OFF'}")
     vector_store = load_vector_store()
     season = None
 
@@ -270,9 +338,10 @@ def main():
 
         try:
             if choice == "1":
-                play_trivia(vector_store, season)
+                play_trivia(vector_store, season, verbose=args.verbose)
             elif choice == "2":
-                ask_anything(vector_store, season)
+                ask_anything(vector_store, season,
+                             verbose=args.verbose, top_n=args.topN)
             elif choice == "3":
                 raw = input("Season (1-13, empty = all): ").strip()
                 season = int(raw) if raw else None

@@ -21,7 +21,7 @@ load_dotenv()
 API_KEY = os.environ["GOOGLE_API_KEY"]
 
 # Baseline system prompt: identical for every question, no retrieved context
-BASELINE_SYSTEM = "You are an expert in the Simpsons TV series. Answer the following question."
+BASELINE_SYSTEM = "You are an expert in the Simpsons TV series. Answer the following question in case you know the answer. Otherwise, say so clearly instead of making it up. Be brief and direct (max 4 sentences). When posible, finish by citing the episode the information comes from."
 
 
 def ask_llm(prompt, system=None):
