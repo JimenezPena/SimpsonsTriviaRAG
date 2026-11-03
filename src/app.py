@@ -22,6 +22,11 @@ app = Flask(__name__, static_folder=None)
 
 # the vector store is loaded ONCE at startup, not per request
 VECTOR_STORE = tg.load_vector_store()
+if VECTOR_STORE._collection.count() == 0:
+    # Chroma silently creates an empty DB when the folder is missing; fail
+    # loudly at boot instead of returning confusing errors on every request
+    raise RuntimeError(f"Vector DB is empty or missing at {tg.DB_PATH}. "
+                       "On Render it is downloaded from the GitHub release by build.sh.")
 
 # trivia questions in flight: the answer stays on the server until reveal
 QUESTIONS = {}

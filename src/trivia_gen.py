@@ -30,7 +30,10 @@ from langchain_chroma import Chroma
 from langchain_core.embeddings import Embeddings
 
 # ==================== CONFIGURATION ====================
-DB_PATH = "batch_vector_db"      # the DB created by ingest_batch.py
+# the DB created by ingest_batch.py; anchored to the project root so it does not
+# depend on the working directory (gunicorn / Render start from anywhere)
+DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                       "batch_vector_db")
 COLLECTION_NAME = "langchain"
 LLM_MODEL = "gemini-3.5-flash-lite"
 MAX_SEASON = 13
