@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Simpsons RAG Trivia</title>
+    <style>
+      :root {
+        --yellow: #ffd90f;
+        --blue: #3a63ad;
+        --bg: #f7f4ea;
+        --card: #ffffff;
+        --text: #1c2430;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: system-ui, sans-serif;
+        background: #464a52 url("images/WallpaperDonut.jpg") center / cover fixed no-repeat;
+        color: var(--text);
+      }
+      header {
+        padding: 16px 24px;
+        border-bottom: 4px solid var(--blue);
+        display: flex;
+        flex-direction: column;      /* logo on top, text centered below */
+        align-items: center;
+        gap: 8px;
+        background: var(--yellow);
+      }
+      header h1 { margin: 0; font-size: 26px; text-align: center; }
+      /* 👉 LOGO SIZE: adjust the height here */
+      header img.logo { height: 110px; border-radius: 8px; }
+      header .controls { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+      select, button {
+        font: inherit;
+        padding: 8px 14px;
+        border-radius: 8px;
+        border: 2px solid var(--blue);
+        background: #fff;
+        cursor: pointer;
+      }
+      main { max-width: 780px; margin: 24px auto; padding: 0 16px; }
+      .tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+      .tabs button.active { background: var(--blue); color: #fff; }
+      .card {
+        background: rgba(255, 255, 255, 0.94);
+        border: 2px solid var(--blue);
+        border-radius: 12px;
+        padding: 20px;
+        min-height: 120px;
+      }
+      .loading {
+        display: flex;
+        flex-direction: column;      /* text line first, Homer below it */
+        align-items: center;
+        gap: 12px;
+        color: #555;
+        font-style: italic;
+      }
+      /* 👉 HOMER GIF SIZE: adjust the height here */
+      .loading img { height: 260px; border-radius: 8px; }
+      .options { display: grid; gap: 8px; margin-top: 16px; }
+      .options button { text-align: left; }
+      .options button.correct { background: #c8f7c5; border-color: #2e7d32; }
+      .options button.wrong { background: #f7c5c5; border-color: #c62828; }
+      .options button:disabled { cursor: default; opacity: 0.9; }
+      .verdict { margin-top: 14px; font-weight: bold; }
+      .verdict.ok { color: #2e7d32; }
+      .verdict.ko { color: #c62828; }
+      .funfact { margin-top: 8px; color: #555; }
+      .source { margin-top: 10px; font-size: 13px; color: #777; }
+      .askbox { display: flex; gap: 8px; }
+      .askbox input { flex: 1; padding: 10px; border: 2px solid var(--blue); border-radius: 8px; font: inherit; }
+      .answer { margin-top: 16px; line-height: 1.5; }
+      .sources { margin-top: 16px; font-size: 13px; }
+      .sources details { margin-top: 6px; }
+      .sources summary { cursor: pointer; color: var(--blue); }
+      .sources pre { background: #f4f4f4; padding: 8px; overflow-x: auto; white-space: pre-wrap; }
+      .error { color: #c62828; margin-top: 12px; }
+      .hint { color: #777; font-size: 13px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <img class="logo" src="images/LogoSimpsons.jpg" alt="The Simpsons" />
+      <h1>RAG Trivia</h1>
+    </header>
+
+    <main>
+      <div class="tabs">
+        <button id="tabTrivia" class="active">🎯 Trivia</button>
+        <button id="tabAsk">💬 Ask anything</button>
+      </div>
+
+      <!-- TRIVIA TAB -->
+      <section id="triviaPanel">
+        <div class="card" id="triviaCard">
+          <button id="newQuestion">New question</button>
+          <p class="hint">Generates a question from a random chunk of the vector DB.</p>
+          <div id="triviaBody"></div>
+        </div>
+      </section>
+
+      <!-- ASK TAB -->
+      <section id="askPanel" style="display:none">
+        <div class="card">
+          <div class="askbox">
+            <input id="askInput" placeholder="e.g. What pet did Lisa have..." />
+            <button id="askSend">Ask</button>
+          </div>
+          <div id="askBody"></div>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+
+      // ---- Homer thinking gif while the LLM works ----
+      const HOMER_GIFS = [
+        "images/HomerThinkingOne.gif",
+        "images/HomerThinkingTwo.gif",
+        "images/HomerThinkingThree.gif",
+        "images/HomerThinkingFour.gif",
+      ];
+      const thinking = (text) => {
+        const gif = HOMER_GIFS[Math.floor(Math.random() * HOMER_GIFS.length)];
+        // text line on top, Homer gif right below it
+        return `<div class="loading"><span>${text}</span><img src="${gif}" alt="Homer thinking" /></div>`;
+      };
+
+      // ---- tabs ----
+      function showTab(tab) {
+        const trivia = tab === "trivia";
+        $("tabTrivia").classList.toggle("active", trivia);
+        $("tabAsk").classList.toggle("active", !trivia);
+        $("triviaPanel").style.display = trivia ? "" : "none";
+        $("askPanel").style.display = trivia ? "none" : "";
+      }
+      $("tabTrivia").onclick = () => showTab("trivia");
+      $("tabAsk").onclick = () => showTab("ask");
+
+      // ---- trivia ----
+      async function newQuestion() {
+        const body = $("triviaBody");
+        body.innerHTML = thinking("Generating question (LLM)…");
+        try {
+          const res = await fetch("/api/trivia", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || "request failed");
+          renderTrivia(data);
+        } catch (e) {
+          body.innerHTML = `<p class="error">⚠️ ${e.message}</p>`;
+        }
+      }
+
+      function renderTrivia(data) {
+        const body = $("triviaBody");
+        body.innerHTML = `
+          <p><strong>${data.question}</strong></p>
+          <div class="options"></div>
+          <div class="verdict" id="verdict"></div>
+          <div class="funfact" id="funfact"></div>
+          <div class="source">📺 Source: S${data.source.season} — “${data.source.title}”</div>`;
+        const opts = body.querySelector(".options");
+        data.options.forEach((opt) => {
+          const b = document.createElement("button");
+          b.textContent = opt;
+          b.onclick = () => reveal(data.qid, opt[0], data.options, b);
+          opts.appendChild(b);
+        });
+      }
+
+      async function reveal(qid, guess, options, clicked) {
+        const buttons = $("triviaBody").querySelectorAll(".options button");
+        buttons.forEach((b) => (b.disabled = true));
+        try {
+          const res = await fetch("/api/trivia/reveal", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ qid, guess }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || "request failed");
+          // highlight: correct option green, wrong guess red
+          buttons.forEach((b) => {
+            if (b.textContent[0] === data.answer.trim()[0].toUpperCase()) b.classList.add("correct");
+            else if (b === clicked) b.classList.add("wrong");
+          });
+          const v = $("verdict");
+          v.textContent = data.correct ? "🎉 Correct!" : "😢 Wrong!";
+          v.className = "verdict " + (data.correct ? "ok" : "ko");
+          $("funfact").textContent = data.fun_fact ? "💡 " + data.fun_fact : "";
+        } catch (e) {
+          $("verdict").innerHTML = `<span class="error">⚠️ ${e.message}</span>`;
+        }
+      }
+
+      $("newQuestion").onclick = newQuestion;
+
+      // ---- ask anything ----
+      async function askQuestion() {
+        const question = $("askInput").value.trim();
+        if (!question) return;
+        const body = $("askBody");
+        body.innerHTML = thinking("Retrieving chunks and thinking…");
+        try {
+          const res = await fetch("/api/ask", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ question }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || "request failed");
+          body.innerHTML = `<div class="answer">💬 ${data.answer}</div><div class="sources"></div>`;
+          const src = body.querySelector(".sources");
+          data.sources.forEach((s) => {
+            const det = document.createElement("details");
+            det.innerHTML = `
+              <summary>[${s.rank}] S${s.season} — “${s.title}” (distance ${s.distance})${s.sent_to_llm ? " → sent" : " · not sent"}</summary>
+              <pre>${s.text}</pre>`;
+            src.appendChild(det);
+          });
+        } catch (e) {
+          body.innerHTML = `<p class="error">⚠️ ${e.message}</p>`;
+        }
+      }
+
+      $("askSend").onclick = askQuestion;
+      $("askInput").addEventListener("keydown", (e) => {
+        if (e.key === "Enter") askQuestion();
+      });
+    </script>
+  </body>
+</html>
