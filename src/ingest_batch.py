@@ -42,7 +42,7 @@ class BatchedGeminiEmbeddings(Embeddings):
                "{model}:batchEmbedContents")
 
     def __init__(self, model="gemini-embedding-001", batch_size=100,
-                 max_retries=5):
+                 max_retries=3):
         self.api_key = os.environ["GOOGLE_API_KEY"]
         self.model = model
         self.batch_size = batch_size

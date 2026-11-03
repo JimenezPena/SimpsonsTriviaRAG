@@ -19,7 +19,8 @@ from langchain_chroma import Chroma
 from langchain_core.embeddings import Embeddings
 
 # ==================== CONFIGURATION ====================
-DB_PATH = "vector_db"      # the DB created by ingest.py
+#DB_PATH = "vector_db"      	# the DB created by ingest.py
+DB_PATH = "batch_vector_db"      # the DB created by ingest_batch.py
 COLLECTION_NAME = "langchain"
 LLM_MODEL = "gemini-3.5-flash-lite"
 MAX_SEASON = 13
@@ -37,7 +38,7 @@ class BatchedGeminiEmbeddings(Embeddings):
     API_URL = ("https://generativelanguage.googleapis.com/v1beta/models/"
                "{model}:batchEmbedContents")
 
-    def __init__(self, model="gemini-embedding-2", batch_size=100):
+    def __init__(self, model="gemini-embedding-001", batch_size=100):
         self.api_key = os.environ["GOOGLE_API_KEY"]
         self.model = model
         self.batch_size = batch_size
