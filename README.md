@@ -1,13 +1,13 @@
 # 🍩 Simpsons RAG Trivia Generator
 
-A lightweight, **local and free RAG (Retrieval-Augmented Generation)** system that uses the historical *The Simpsons* scripts to generate trivia questions and contextual curiosities through embeddings and LLMs.
+A lightweight, **local and free RAG (Retrieval-Augmented Generation)** system that uses the historical *The Simpsons* scripts to generate trivia questions and contextual curiosities through embeddings and LLMs. 
 
 ---
 
 ## 🛠️ Architecture & Technologies
 
 * **Orchestration:** Python + LangChain (Chroma integration only)
-* **Embeddings:** Google Gemini API (`gemini-embedding-2`) via `batchEmbedContents` REST calls — up to 100 texts per request, so a full ingestion stays well within the free-tier quotas
+* **Embeddings:** Google Gemini API (`gemini-embedding-001`) via `batchEmbedContents` REST calls — up to 100 texts per request, so a full ingestion stays well within the free-tier quotas
 * **Vector Database:** ChromaDB (local persistence)
 * **LLM:** Google Gemini API (`gemini-3.5-flash-lite`) via REST
 * **Dataset:** [The Simpsons Dataset (Kaggle)](https://www.kaggle.com/datasets/prashant111/the-simpsons-dataset/)
@@ -33,11 +33,16 @@ simpsons-rag-trivia/
 ├── src/                   # Source code
 │   ├── __init__.py
 │   ├── ingest.py          # Chunking, vectorization and data ingestion script
-│   ├── trivia_gen.py      # Main script: trivia generation and quiz game
+│   ├── trivia_gen.py      # Main script: trivia generation and quiz gamscript
+│   ├── app.py             # Web script: Flask application that loads trivia_gen and launches the web server 
+│   └── index.html         # HTML design of the web
 │   └── crosscheck_chunks  # Inspect and print chunks per season/episode
 │
 ├── .gitignore             # Files excluded from version control
 ├── requirements.txt       # Project dependencies
+├── requirements-web.txt   # Project dependencies for the web in Render
+├── build.sh               # script for the starting build at Render
+├── render.yaml            # Blueprint for Render
 └── README.md              # Main documentation
 ```
 
@@ -66,7 +71,7 @@ simpsons-rag-trivia/
 4. **Build the vector database**
 
    ```bash
-   python src/ingest.py
+   python src/batch_ingest.py
    ```
 
    Ingestion can be interrupted and relaunched at any time; progress is saved per episode.
@@ -85,4 +90,4 @@ simpsons-rag-trivia/
 
 ## 📄 License
 
-MIT
+No-License
