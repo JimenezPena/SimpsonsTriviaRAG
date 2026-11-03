@@ -5,3 +5,4 @@ langchain-chroma
 langchain-google-genai
 chromadb
 python-dotenv
+flask
