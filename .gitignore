@@ -7,6 +7,9 @@ __pycache__/
 vector_db/
 batch_vector_db/
 
+#tar file with the vector_db
+db.tar.gz
+
 # Datasets pesados (opcional, si prefieres descargarlos con un script)
 data/*.csv
 
