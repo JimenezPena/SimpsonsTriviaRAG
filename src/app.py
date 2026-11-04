@@ -11,6 +11,7 @@ import re
 import uuid
 import sys
 import time
+import threading
 import faulthandler
 
 sys.path.insert(0, os.path.dirname(__file__))   # allow `import trivia_gen`
@@ -22,13 +23,26 @@ import trivia_gen as tg   # reuses: load_vector_store, random_chunk, retrieve,
 
 app = Flask(__name__, static_folder=None)
 
-# the vector store is loaded ONCE at startup, not per request
-VECTOR_STORE = tg.load_vector_store()
-if VECTOR_STORE._collection.count() == 0:
-    # Chroma silently creates an empty DB when the folder is missing; fail
-    # loudly at boot instead of returning confusing errors on every request
+if tg.db_count() == 0:
+    # fail loudly at boot instead of returning confusing errors on every request
     raise RuntimeError(f"Vector DB is empty or missing at {tg.DB_PATH}. "
                        "On Render it is downloaded from the GitHub release by build.sh.")
+
+# Chroma (Rust bindings) is only needed for free-form Q&A (vector search), so it
+# is loaded lazily on the first /api/ask and then reused. The trivia quiz reads
+# chunks directly from SQLite and never touches it.
+_STORE = None
+_STORE_LOCK = threading.Lock()
+
+
+def get_store():
+    global _STORE
+    with _STORE_LOCK:
+        if _STORE is None:
+            t = time.time()
+            _STORE = tg.load_vector_store()
+            print(f"[chroma] vector store loaded in {time.time()-t:.1f}s", flush=True)
+        return _STORE
 
 # trivia questions in flight: the answer stays on the server until reveal
 QUESTIONS = {}
@@ -136,7 +150,7 @@ def api_trivia():
     """Generates a new trivia question. The answer is NOT sent to the client."""
     t0 = time.time()
     season = request.json.get("season") if request.json else None
-    chunk, meta = tg.random_chunk(VECTOR_STORE, season)
+    chunk, meta = tg.random_chunk(None, season)
     print(f"[trivia] chunk ok {time.time()-t0:.2f}s rss={_rss_mb()} MB", flush=True)
     source = {"season": meta["season"], "title": meta["episode_title"]}
 
@@ -184,7 +198,7 @@ def api_ask():
     if not question:
         return jsonify({"error": "empty question"}), 400
 
-    results = tg.retrieve(VECTOR_STORE, question, season,
+    results = tg.retrieve(get_store(), question, season,
                           k=max(top_n, tg.TOP_K))
     if not results:
         return jsonify({"answer": "Nothing found for that question.",
