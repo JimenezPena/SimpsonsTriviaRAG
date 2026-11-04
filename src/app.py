@@ -11,6 +11,7 @@ import re
 import uuid
 import sys
 import time
+import faulthandler
 
 sys.path.insert(0, os.path.dirname(__file__))   # allow `import trivia_gen`
 
@@ -106,6 +107,23 @@ def images(filename):
     # static images (wallpaper, logo, Homer thinking gifs) next to this file
     return send_from_directory(os.path.join(os.path.dirname(__file__), "images"),
                                filename)
+
+
+@app.before_request
+def _watchdog_start():
+    """Diagnostics: log POST requests as they ENTER the app, and if one is still
+    running after 15 s, dump the stack of every thread to the log (faulthandler
+    works from a C thread, so it also fires if the GIL is held)."""
+    if request.method == "POST":
+        print(f"[req] {request.method} {request.path} start rss={_rss_mb()} MB",
+              flush=True)
+        faulthandler.dump_traceback_later(15, exit=False)
+
+
+@app.teardown_request
+def _watchdog_stop(exc=None):
+    if request.method == "POST":
+        faulthandler.cancel_dump_traceback_later()
 
 
 @app.get("/api/config")
