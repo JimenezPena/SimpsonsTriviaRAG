@@ -10,6 +10,7 @@ import os
 import re
 import uuid
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(__file__))   # allow `import trivia_gen`
 
@@ -30,6 +31,31 @@ if VECTOR_STORE._collection.count() == 0:
 
 # trivia questions in flight: the answer stays on the server until reveal
 QUESTIONS = {}
+
+
+def _rss_mb():
+    """Resident memory of this process in MB (Linux only; 0 elsewhere)."""
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) // 1024
+    except OSError:
+        pass
+    return 0
+
+
+print(f"[boot] vector store ready, rss={_rss_mb()} MB", flush=True)
+
+
+@app.errorhandler(Exception)
+def on_error(e):
+    """Any unhandled error -> JSON the frontend can show (and a log line)."""
+    from werkzeug.exceptions import HTTPException
+    if isinstance(e, HTTPException):
+        return jsonify({"error": e.description}), e.code
+    app.logger.exception("unhandled error")
+    return jsonify({"error": f"{type(e).__name__}: {e}"}), 500
 
 
 # ----------------------------------------------------------------------------
@@ -90,8 +116,10 @@ def config():
 @app.post("/api/trivia")
 def api_trivia():
     """Generates a new trivia question. The answer is NOT sent to the client."""
+    t0 = time.time()
     season = request.json.get("season") if request.json else None
     chunk, meta = tg.random_chunk(VECTOR_STORE, season)
+    print(f"[trivia] chunk ok {time.time()-t0:.2f}s rss={_rss_mb()} MB", flush=True)
     source = {"season": meta["season"], "title": meta["episode_title"]}
 
     prompt = (f"Script fragment (season {meta['season']}, episode "
@@ -100,7 +128,9 @@ def api_trivia():
     try:
         out = tg.ask_llm(prompt, system=tg.TRIVIA_SYSTEM)
     except RuntimeError as e:
+        print(f"[trivia] LLM error after {time.time()-t0:.1f}s: {e}", flush=True)
         return jsonify({"error": str(e)}), 502
+    print(f"[trivia] LLM ok {time.time()-t0:.1f}s", flush=True)
 
     question, options, answer, fun_fact = parse_trivia(out)
     if not question or len(options) < 2 or not answer:

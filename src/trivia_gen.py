@@ -36,6 +36,7 @@ DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
                        "batch_vector_db")
 COLLECTION_NAME = "langchain"
 LLM_MODEL = "gemini-3.5-flash-lite"
+LLM_TIMEOUT = 25                 # seconds per LLM HTTP call (must stay well below gunicorn --timeout)
 MAX_SEASON = 13
 TOP_K = 3                        # chunks SENT to the LLM in free-form Q&A
 # =======================================================
@@ -127,7 +128,7 @@ def ask_llm(prompt, system=None):
                                      headers={"Content-Type": "application/json"},
                                      method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            with urllib.request.urlopen(req, timeout=LLM_TIMEOUT) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
             return data["candidates"][0]["content"]["parts"][0]["text"].strip()
         except urllib.error.HTTPError as e:
@@ -136,6 +137,12 @@ def ask_llm(prompt, system=None):
                 print(f"⚠️  400 with thinkingConfig; retrying without it: {detail[:200]}")
                 continue
             raise RuntimeError(f"LLM HTTP {e.code}: {detail}") from e
+        except (urllib.error.URLError, OSError) as e:
+            # timeouts, DNS or connection failures: surface as RuntimeError so
+            # the web layer answers with JSON instead of hanging or crashing
+            raise RuntimeError(f"LLM network error ({type(e).__name__}): {e}") from e
+        except (KeyError, IndexError, ValueError) as e:
+            raise RuntimeError(f"Unexpected LLM response: {e!r}") from e
     raise RuntimeError("LLM call failed after thinking fallback")
 
 
