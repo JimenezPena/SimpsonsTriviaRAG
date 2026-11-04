@@ -22,6 +22,7 @@ import os
 import json
 import time
 import random
+import sqlite3
 import argparse
 import urllib.request
 import urllib.error
@@ -157,24 +158,59 @@ def load_vector_store():
     )
 
 
-def random_chunk(vector_store, season=None):
-    """Samples a random chunk (optionally from a specific season)."""
-    where = {"season": {"$eq": season}} if season else None
-    # sample simulation: Chroma has no "random" ordering;
-    # we pick a random offset over the total of the collection
-    col = vector_store._collection
-    total = col.count()
-    offset = random.randint(0, max(total - 1, 0))
-    res = col.get(limit=1, offset=offset, where=where,
-                  include=["documents", "metadatas"])
-    docs, metas = res.get("documents", []), res.get("metadatas", [])
-    if not docs:
-        # retry without where, or bail out
-        res = col.get(limit=1, offset=offset, include=["documents", "metadatas"])
-        docs, metas = res.get("documents", []), res.get("metadatas", [])
-        if not docs:
+def _ro_connect():
+    """Read-only connection to Chroma's own SQLite file. Plain sqlite3 releases
+    the GIL while querying and does not go through Chroma's Rust bindings."""
+    path = os.path.join(DB_PATH, "chroma.sqlite3")
+    if not os.path.exists(path):
+        raise RuntimeError(f"Vector DB not found at {path}")
+    return sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=10)
+
+
+def db_count():
+    """Number of chunks stored (same figure as collection.count())."""
+    con = _ro_connect()
+    try:
+        return con.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
+    finally:
+        con.close()
+
+
+def random_chunk(vector_store=None, season=None):
+    """Samples a random chunk (optionally from a specific season).
+
+    Reads the document and metadata straight from chroma.sqlite3 instead of
+    calling collection.count()/get(): on Render those Rust-binding calls
+    blocked the whole process. `vector_store` is kept only for compatibility.
+    """
+    con = _ro_connect()
+    try:
+        if season:
+            row = con.execute(
+                "SELECT e.id FROM embeddings e JOIN embedding_metadata m "
+                "ON m.id = e.id AND m.key = 'season' AND m.int_value = ? "
+                "ORDER BY RANDOM() LIMIT 1", (int(season),)).fetchone()
+        else:
+            row = None
+        if row is None:
+            # no season requested, or none stored for it (the DB may hold fewer
+            # seasons than MAX_SEASON): fall back to any chunk, as before
+            row = con.execute(
+                "SELECT id FROM embeddings ORDER BY RANDOM() LIMIT 1").fetchone()
+        if row is None:
             raise RuntimeError("The collection is empty.")
-    return docs[0], metas[0]
+        doc, meta = None, {}
+        for key, s, i, f, b in con.execute(
+                "SELECT key, string_value, int_value, float_value, bool_value "
+                "FROM embedding_metadata WHERE id = ?", (row[0],)):
+            val = next((v for v in (s, i, f, b) if v is not None), None)
+            if key == "chroma:document":
+                doc = val
+            else:
+                meta[key] = val
+        return doc, meta
+    finally:
+        con.close()
 
 
 def retrieve(vector_store, question, season=None, k=TOP_K):
