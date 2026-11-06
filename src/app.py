@@ -94,7 +94,28 @@ def parse_trivia(out):
             fun_fact = s.split(":", 1)[1].strip()
     return question, options, answer, fun_fact
 
-
+def parse_trivia_bilingual(out):
+    """Splits the bilingual output into (es, en) question dicts."""
+    def parse(section):
+        question, options, answer, fun = None, [], None, None
+        for line in section.splitlines():
+            s = line.strip()
+            if not s:
+                continue
+            u = s.upper()
+            if u.startswith(("PREGUNTA:", "QUESTION:")):
+                question = s.split(":", 1)[1].strip()
+            elif re.match(r"^[A-D]\)", s):
+                options.append(s)
+            elif u.startswith(("RESPUESTA:", "ANSWER:")):
+                answer = s.split(":", 1)[1].strip()
+            elif u.startswith(("CURIOSIDAD:", "FUN FACT:")):
+                fun = s.split(":", 1)[1].strip()
+        return {"question": question, "options": options,
+                "answer": answer, "fun_fact": fun}
+    parts = out.split("---")
+    return parse(parts[0]), parse(parts[1] if len(parts) > 1 else "")
+    
 def chunk_info(doc, score):
     m = doc.metadata
     return {
@@ -147,8 +168,38 @@ def config():
 
 @app.post("/api/trivia")
 def api_trivia():
-    """Generates a new trivia question. The answer is NOT sent to the client."""
+    """Generates a new trivia question. Answer stays on the server.
+    mode="clips": bilingual question from a chunk with an aligned clip."""
     t0 = time.time()
+    mode = (request.json or {}).get("mode", "classic")
+
+    if mode == "clips":
+        entry = tg.random_quiz_chunk()
+        prompt = (f"Fragmento de guion (temporada {entry['season']}, episodio "
+                  f"\"{entry['title']}\"):\n\n{entry['text_es']}\n\n"
+                  f"Genera la pregunta de trivia (castellano + inglés).")
+        try:
+            out = tg.ask_llm(prompt, system=tg.TRIVIA_ES_SYSTEM)
+        except RuntimeError as e:
+            return jsonify({"error": str(e)}), 502
+        print(f"[trivia/clips] LLM ok {time.time()-t0:.1f}s", flush=True)
+
+        es, en = parse_trivia_bilingual(out)
+        if (not es["question"] or len(es["options"]) < 2 or not es["answer"]
+                or not en["question"]):
+            return jsonify({"error": "malformed LLM output, try again"}), 502
+
+        qid = uuid.uuid4().hex
+        source = {"season": entry["season"], "title": entry["title"]}
+        QUESTIONS[qid] = {"es": es, "en": en, "source": source,
+                          "ig_url": entry["ig_url"],
+                          "shortcode": entry["shortcode"]}
+        return jsonify({
+            "qid": qid, "source": source,
+            "es": {"question": es["question"], "options": es["options"]},
+            "en": {"question": en["question"], "options": en["options"]},
+        })
+    
     season = request.json.get("season") if request.json else None
     chunk, meta = tg.random_chunk(None, season)
     print(f"[trivia] chunk ok {time.time()-t0:.2f}s rss={_rss_mb()} MB", flush=True)
@@ -177,16 +228,27 @@ def api_trivia():
 
 @app.post("/api/trivia/reveal")
 def api_trivia_reveal():
-    """Reveals the answer of a question and checks the player's guess."""
+    """Reveals the answer and checks the guess. lang picks the language
+    for clips-mode questions; clips mode also returns the IG clip."""
     body = request.json or {}
-    qid, guess = body.get("qid"), (body.get("guess") or "").strip().upper()
+    qid = body.get("qid")
+    guess = (body.get("guess") or "").strip().upper()
+    lang = body.get("lang", "es")
     q = QUESTIONS.pop(qid, None)
     if q is None:
         return jsonify({"error": "unknown or already answered question"}), 404
+
+    if "es" in q:                      # clips mode
+        tr = q.get(lang) or q["es"]
+        correct = bool(guess) and guess == tr["answer"].strip()[:1].upper()
+        return jsonify({"correct": correct, "answer": tr["answer"],
+                        "fun_fact": tr["fun_fact"], "source": q["source"],
+                        "ig_url": q["ig_url"], "shortcode": q["shortcode"]})
+
     correct = bool(guess) and guess == q["answer"].strip()[:1].upper()
     return jsonify({"correct": correct, "answer": q["answer"],
                     "fun_fact": q["fun_fact"], "source": q["source"]})
-
+                    
 
 @app.post("/api/ask")
 def api_ask():
@@ -229,6 +291,6 @@ if __name__ == "__main__":
     # LOCAL development server (python src/app.py).
     # PRODUCTION (Render): gunicorn src.app:app (see Render start command);
     # PORT is injected by Render, so the local default stays at 5000.
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 5001))
     app.run(host="127.0.0.1" if not os.environ.get("PORT") else "0.0.0.0",
             port=port, threaded=True)

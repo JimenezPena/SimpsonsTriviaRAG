@@ -85,6 +85,9 @@
     <header>
       <img class="logo" src="images/LogoSimpsons.jpg" alt="The Simpsons" />
       <h1>RAG Trivia</h1>
+      <div class="controls">
+        <button id="langToggle">🇪🇸 ES</button>
+      </div>
     </header>
 
     <main>
@@ -142,17 +145,28 @@
       $("tabAsk").onclick = () => showTab("ask");
 
       // ---- trivia ----
+      let LANG = "es";
+      let currentQ = null;   // last question, to re-render on language switch
+
+      $("langToggle").onclick = () => {
+        LANG = LANG === "es" ? "en" : "es";
+        $("langToggle").textContent = LANG === "es" ? "🇪🇸 ES" : "🇬🇧 EN";
+        if (currentQ) renderTrivia(currentQ);
+      };
+
       async function newQuestion() {
         const body = $("triviaBody");
+        currentQ = null;
         body.innerHTML = thinking("Generating question (LLM)…");
         try {
           const res = await fetch("/api/trivia", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({}),
+            body: JSON.stringify({ mode: "clips" }),
           });
           const data = await res.json();
           if (!res.ok) throw new Error(data.error || "request failed");
+          currentQ = data;
           renderTrivia(data);
         } catch (e) {
           body.innerHTML = `<p class="error">⚠️ ${e.message}</p>`;
@@ -160,42 +174,48 @@
       }
 
       function renderTrivia(data) {
+        const tr = data[LANG] || data.es;
         const body = $("triviaBody");
+        const buttons = tr.options
+          .map((o) => `<button onclick="reveal('${data.qid}','${o[0]}',this)">${o}</button>`)
+          .join("");
         body.innerHTML = `
-          <p><strong>${data.question}</strong></p>
-          <div class="options"></div>
-          <div class="verdict" id="verdict"></div>
-          <div class="funfact" id="funfact"></div>
-          <div class="source">📺 Source: S${data.source.season} — “${data.source.title}”</div>`;
-        const opts = body.querySelector(".options");
-        data.options.forEach((opt) => {
-          const b = document.createElement("button");
-          b.textContent = opt;
-          b.onclick = () => reveal(data.qid, opt[0], data.options, b);
-          opts.appendChild(b);
-        });
+          <p><strong>${tr.question}</strong></p>
+          <div class="options">${buttons}</div>
+          <p class="verdict" id="verdict"></p>
+          <p class="funfact" id="funfact"></p>
+          <p class="source" id="source"></p>
+          <div id="clipBox"></div>`;
       }
 
-      async function reveal(qid, guess, options, clicked) {
+      async function reveal(qid, guess, clicked) {
         const buttons = $("triviaBody").querySelectorAll(".options button");
         buttons.forEach((b) => (b.disabled = true));
         try {
           const res = await fetch("/api/trivia/reveal", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ qid, guess }),
+            body: JSON.stringify({ qid, guess, lang: LANG }),
           });
           const data = await res.json();
           if (!res.ok) throw new Error(data.error || "request failed");
-          // highlight: correct option green, wrong guess red
           buttons.forEach((b) => {
             if (b.textContent[0] === data.answer.trim()[0].toUpperCase()) b.classList.add("correct");
             else if (b === clicked) b.classList.add("wrong");
           });
           const v = $("verdict");
-          v.textContent = data.correct ? "🎉 Correct!" : "😢 Wrong!";
+          v.textContent = data.correct ? "🎉 ¡Correcto!" : "😢 ¡Fallo!";
           v.className = "verdict " + (data.correct ? "ok" : "ko");
           $("funfact").textContent = data.fun_fact ? "💡 " + data.fun_fact : "";
+          if (data.source)
+            $("source").textContent = `📺 T${data.source.season} — ${data.source.title}`;
+          if (data.shortcode) {
+            $("clipBox").innerHTML = `
+              <iframe src="https://www.instagram.com/reel/${data.shortcode}/embed"
+                      width="360" height="480" frameborder="0" scrolling="no"
+                      allowtransparency="true"></iframe>
+              <p class="hint"><a href="${data.ig_url}" target="_blank" rel="noopener">Ver en Instagram</a></p>`;
+          }
         } catch (e) {
           $("verdict").innerHTML = `<span class="error">⚠️ ${e.message}</span>`;
         }

@@ -212,6 +212,39 @@ def random_chunk(vector_store=None, season=None):
     finally:
         con.close()
 
+# ----------------------------------------------------------------------------
+# Clip quiz mode: chunks with an aligned Instagram clip (quiz_pool.json)
+# ----------------------------------------------------------------------------
+QUIZ_POOL_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "data", "quiz_pool.json")
+_quiz_pool = None
+
+
+def load_quiz_pool():
+    """chunk_id -> {chunk_id, ig_url, shortcode, season, title,
+    text_es, text_en}. Loaded once, then cached."""
+    global _quiz_pool
+    if _quiz_pool is None:
+        try:
+            with open(QUIZ_POOL_PATH, encoding="utf-8") as f:
+                _quiz_pool = json.load(f)
+        except FileNotFoundError:
+            raise RuntimeError(
+                f"quiz_pool.json not found at {QUIZ_POOL_PATH}. "
+                "Generate it with: "
+                "PYTHONPATH=src python -m spanish_align.export_quiz_pool")
+    return _quiz_pool
+
+
+def random_quiz_chunk():
+    """Samples a random chunk WITH an aligned clip, from quiz_pool.json.
+    No vector DB involved: plain random choice over the pool."""
+    pool = load_quiz_pool()
+    if not pool:
+        raise RuntimeError("quiz_pool.json is empty")
+    return pool[random.choice(list(pool))]
+    
 
 def retrieve(vector_store, question, season=None, k=TOP_K):
     """Free-form Q&A: retrieves the k chunks most similar to the question."""
@@ -250,7 +283,21 @@ TRIVIA_SYSTEM = (
     "ANSWER: letter) text\nFUN FACT: one short, fun line related to the fragment."
 )
 
-
+TRIVIA_ES_SYSTEM = (
+    "Eres un experto en Los Simpson (temporadas clásicas). A partir del "
+    "fragmento de guion que se te da (en castellano), generas una pregunta "
+    "de trivia con respuesta objetiva DENTRO del fragmento: nombres, "
+    "objetos, lugares, qué dice un personaje o qué ocurre. Devuelve "
+    "EXACTAMENTE este formato, primero en castellano y luego el mismo "
+    "contenido en inglés (las opciones A-D deben ser las MISMAS y en el "
+    "MISMO orden en ambos idiomas):\n"
+    "PREGUNTA: ...\nA) ...\nB) ...\nC) ...\nD) ...\n"
+    "RESPUESTA: letra) texto\nCURIOSIDAD: una línea breve y divertida.\n"
+    "---\n"
+    "QUESTION: ...\nA) ...\nB) ...\nC) ...\nD) ...\n"
+    "ANSWER: letter) text\nFUN FACT: one short, fun line."
+)
+    
 def play_trivia(vector_store, season=None, verbose=False):
     chunk, meta = random_chunk(vector_store, season)
     source = f"S{meta['season']} \"{meta['episode_title']}\""
