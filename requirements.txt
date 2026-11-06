@@ -7,3 +7,4 @@ chromadb
 python-dotenv
 flask
 gunicorn
+yt-dlp
