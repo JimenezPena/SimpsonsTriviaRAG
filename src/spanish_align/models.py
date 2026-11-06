@@ -26,6 +26,8 @@ class Chunk:
     match_confidence: float = 0.0
     match_method: str = "none"
     reviewed: bool = False
+    chunk_id: str | None = None          # matched DB chunk (set once confirmed)
+    runner_ups: list[dict] = field(default_factory=list)   # other candidates
     speakers: list[str] = field(default_factory=list)
     lines: list[Line] = field(default_factory=list)
 
