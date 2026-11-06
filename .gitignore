@@ -15,3 +15,11 @@ data/*.csv
 
 .DS_Store
 cron.log
+clips.txt
+
+data/ingest/cache/
+data/ingest/media/
+data/ingest/transcripts/
+data/ingest/chunks/
+data/ingest/chunks_en.jsonl
+data/ingest/chunks_es.jsonl
