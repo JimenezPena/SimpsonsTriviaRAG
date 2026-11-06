@@ -99,7 +99,7 @@ def ingest(url: str, keep_video: bool = False, redo: bool = False) -> None:
         chunk_record.lines = build_lines(segments, chunk["lines"], literal_es)
         register_ig_link(chunk["chunk_id"], url, score)
     else:
-        queue_for_review(url, score)
+        queue_for_review(chunk["chunk_id"], url, score)
 
     out.write_text(chunk_record.to_jsonl() + "\n", encoding="utf-8")
     tag = "OK " if status == "accept" else "REV"
@@ -110,14 +110,27 @@ def ingest(url: str, keep_video: bool = False, redo: bool = False) -> None:
 def register_ig_link(chunk_id: str, url: str, score: float) -> None:
     """chunk_id -> ig_url registry, consumed by the main RAG app to
     enrich the DB chunks with the clip link (and by quizzes/Q&A)."""
-    rec = {"chunk_id": chunk_id, "ig_url": url,
-           "score": round(score, 3), "status": "linked"}
+    rec = {
+                "ig_url": url,
+                "shortcode": clip_id,
+                "chunk_id": chunk_id,        
+                "episode_id": episode_id,      
+                "score": round(conf, 3), 
+                "status": "linked"
+             }
     with IG_LINKS.open("a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
-def queue_for_review(url: str, score: float) -> None:
-    rec = {"ig_url": url, "score": round(score, 3), "status": "pending"}
+def queue_for_review(chunk_id: str, url: str, score: float) -> None:
+    rec = {
+                "ig_url": url,
+                "shortcode": clip_id,
+                "chunk_id": chunk_id,       
+                "episode_id": episode_id,        
+                "score": round(conf, 3),
+                "status": "pending"
+            }
     with REVIEW_QUEUE.open("a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
@@ -139,7 +152,74 @@ def cmd_review(_) -> None:
     if REVIEW_QUEUE.exists():
         print(REVIEW_QUEUE.read_text(encoding="utf-8"))
 
+def review() -> None:
+    """Interactive review of the clips pending in the review queue."""
+    if not REVIEW_QUEUE.exists():
+        print("No review queue file.")
+        return
+    items = [json.loads(l) for l in
+             REVIEW_QUEUE.read_text(encoding="utf-8").splitlines() if l.strip()]
+    pending = [i for i in items if i.get("status") == "pending"]
+    print(f"Review queue: {len(pending)} pending / {len(items)} total\n")
 
+    # chunk texts, to show the candidate next to the clip
+    chunks = {}
+    if CHUNKS_EN.exists():
+        for l in CHUNKS_EN.read_text(encoding="utf-8").splitlines():
+            if not l.strip():
+                continue
+            c = json.loads(l)
+            chunks[c["chunk_id"]] = c
+
+    reviewed = 0
+    for item in pending:
+        print("=" * 70)
+        print(f"CLIP : {item['ig_url']}")
+        print(f"MATCH: {item.get('episode_id')} / {item.get('chunk_id')} "
+              f"(score {item.get('score', 0):.3f})")
+
+        sc = item.get("shortcode")
+        tpath = TRANSCRIPTS / f"{sc}.json"
+        print("--- clip transcript (start) ---")
+        if tpath.exists():
+            t = json.loads(tpath.read_text(encoding="utf-8"))
+            for line in t.get("lines", [])[:5]:
+                print(f"  {line.get('speaker', '?')}: {line.get('text', '')}")
+        else:
+            print("  (no cached transcript)")
+
+        c = chunks.get(item.get("chunk_id"))
+        print("--- candidate chunk (first lines) ---")
+        if c:
+            for line in c.get("lines", [])[:5]:
+                if not line.get("context"):
+                    print(f"  {line.get('speaker', '?')}: {line.get('text', '')}")
+        else:
+            print("  (chunk not found in chunks_en.jsonl)")
+
+        ans = input("[y] approve  [n] reject  [s] skip: ").strip().lower()
+        if ans == "y":
+            item["status"] = "approved"
+            item["reviewed"] = True
+            with IG_LINKS.open("a", encoding="utf-8") as f:
+                f.write(json.dumps({"chunk_id": item["chunk_id"],
+                                    "ig_url": item["ig_url"],
+                                    "score": item["score"]},
+                                   ensure_ascii=False) + "\n")
+            reviewed += 1
+            print("  -> approved, added to ig_links.jsonl\n")
+        elif ans == "n":
+            item["status"] = "rejected"
+            print("  -> rejected\n")
+        else:
+            print("  -> left pending\n")
+
+    REVIEW_QUEUE.write_text(
+        "\n".join(json.dumps(i, ensure_ascii=False) for i in items) + "\n",
+        encoding="utf-8")
+    print(f"Reviewed: {reviewed} approved. "
+          f"Queue saved ({sum(1 for i in items if i['status'] == 'pending')} pending).")
+          
 def cmd_cleanup(_) -> None:
     stats = media_stats()
     print(f"Video cache: {stats['count']} files, {stats['total_mb']} MB")
