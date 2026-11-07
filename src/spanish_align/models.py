@@ -11,7 +11,7 @@ class Line:
     start: float
     end: float
     text_en: str | None = None
-    translation_source: str = "dub"   # "dub" | "literal"
+    translation_source: str = "dub"   # "dub" | "audio" | "literal" | "missing"
 
 
 @dataclass
@@ -25,6 +25,7 @@ class Chunk:
     episode_title: str | None = None
     match_confidence: float = 0.0
     match_method: str = "none"
+    audio_lang: str = "es"                 # "es" (dub) | "en" (original)
     reviewed: bool = False
     chunk_id: str | None = None          # matched DB chunk (set once confirmed)
     runner_ups: list[dict] = field(default_factory=list)   # other candidates

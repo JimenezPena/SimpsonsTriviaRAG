@@ -117,22 +117,28 @@ def _cache_key(text: str, task_type: str) -> str:
 # Audio transcription (video -> segments with timestamps)
 # --------------------------------------------------------------------------
 
-def transcribe(video) -> list[dict]:
-    """Returns [{start, end, text}] in Spanish using Gemini. Cached."""
+def transcribe(video) -> dict:
+    """Returns {"lang": "es"|"en", "segments": [{start, end, text}]}.
+    Cached; old list-format caches are ignored and re-transcribed."""
     ensure_dirs()
     cache = TRANSCRIPTS_DIR / f"{video.stem}.json"
     if cache.exists():
-        return json.loads(cache.read_text(encoding="utf-8"))
+        data = json.loads(cache.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and "lang" in data:
+            return data
+        # old format (bare list): language unknown -> re-transcribe below
 
     with open(video, "rb") as f:
         b64 = base64.b64encode(f.read()).decode("utf-8")
 
     prompt = (
-        "Transcribe ALL the dialogue in this clip from The Simpsons (Spanish "
-        "dub). Reply ONLY with a JSON array, one element per dialogue line: "
-        '[{"start": <seconds float>, "end": <seconds float>, "text": "<line>"}]. '
-        "Ignore music, sound effects and canned laughter. Use the audio "
-        "timeline for start/end. No markdown, just the array."
+        "Transcribe ALL the dialogue in this clip from The Simpsons. First "
+        "detect the spoken language: 'es' for the Spanish dub, 'en' for the "
+        "original English audio. Reply ONLY with a JSON object, no markdown:\n"
+        '{"lang": "<es|en>", "segments": [{"start": <seconds float>, '
+        '"end": <seconds float>, "text": "<line>"}]}\n'
+        "One element per dialogue line. Ignore music, sound effects and "
+        "canned laughter. Use the audio timeline for start/end."
     )
     payload = {
         "contents": [{"parts": [
@@ -143,10 +149,9 @@ def transcribe(video) -> list[dict]:
     }
     resp = _post(GEMINI_MODEL, "generateContent", payload)
     raw = resp["candidates"][0]["content"]["parts"][0]["text"]
-    segments = json.loads(_strip_fences(raw))
-    cache.write_text(json.dumps(segments, ensure_ascii=False), encoding="utf-8")
-    return segments
-
+    data = json.loads(_strip_fences(raw))
+    cache.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    return data
 
 # --------------------------------------------------------------------------
 # Literal EN -> ES translation

@@ -79,7 +79,7 @@ def load_literal_es(chunk_id: str) -> dict[int, str]:
 # --------------------------------------------------------------------------
 
 def register_ig_link(clip_id: str, url: str, chunk_id: str,
-                     episode_id: str, score: float) -> None:
+                     episode_id: str, score: float, clip_lang: str = "es") -> None:
     """chunk_id -> ig_url registry, consumed by export_quiz_pool and the
     main app. A (chunk, url) pair is registered only once."""
     if any(r.get("chunk_id") == chunk_id and r.get("ig_url") == url
@@ -91,12 +91,13 @@ def register_ig_link(clip_id: str, url: str, chunk_id: str,
         "chunk_id": chunk_id,
         "episode_id": episode_id,
         "score": round(score, 3),
+        "lang": clip_lang,
         "status": "linked",
     })
 
 
 def queue_for_review(clip_id: str, url: str, chunk_id: str,
-                     episode_id: str, score: float) -> None:
+                     episode_id: str, score: float, clip_lang: str = "es") -> None:
     """Adds a doubtful clip to the review queue (once per clip)."""
     if any(r.get("shortcode") == clip_id or r.get("ig_url") == url
            for r in _read_jsonl(REVIEW_QUEUE)):
@@ -107,6 +108,7 @@ def queue_for_review(clip_id: str, url: str, chunk_id: str,
         "chunk_id": chunk_id,
         "episode_id": episode_id,
         "score": round(score, 3),
+        "lang": clip_lang,
         "status": "pending",
     })
 
@@ -129,7 +131,8 @@ def _new_record(clip_id: str, url: str, chunk: dict, score: float) -> Chunk:
 
 
 def _align_and_link(record: Chunk, chunk: dict, segments: list[dict],
-                    runner_ups: list[tuple[dict, float]] = ()) -> None:
+                    runner_ups: list[tuple[dict, float]] = (),
+                    clip_lang: str = "es") -> None:
     """Confirms the clip<->chunk match: aligns the dub transcript with the
     chunk lines (dub text where it matches, literal translation elsewhere)
     and registers the clip in ig_links.jsonl."""
@@ -137,11 +140,14 @@ def _align_and_link(record: Chunk, chunk: dict, segments: list[dict],
     record.chunk_id = chunk["chunk_id"]
     record.runner_ups = [{"chunk_id": c["chunk_id"], "score": round(s, 3)}
                          for c, s in runner_ups if c]
+    record.audio_lang = clip_lang
     record.lines = build_lines(segments, chunk["lines"],
-                               load_literal_es(chunk["chunk_id"]))
+                               load_literal_es(chunk["chunk_id"]),
+                               clip_lang=clip_lang)
     register_ig_link(record.clip_id, record.ig_url, chunk["chunk_id"],
-                     chunk["episode_id"], record.match_confidence)
-
+                    chunk["episode_id"], record.match_confidence,
+                    clip_lang=clip_lang)
+                    
 
 def ingest(url: str, keep_video: bool = False, redo: bool = False) -> None:
     from .media import download_clip
@@ -154,9 +160,10 @@ def ingest(url: str, keep_video: bool = False, redo: bool = False) -> None:
         return
 
     video = download_clip(url)
-    segments = transcribe(video)
+    result = transcribe(video)
+    segments, lang = result["segments"], result.get("lang", "es")
     if not keep_video:
-        delete_clip(url)  # the transcript stays cached as JSON
+        delete_clip(url)   # the transcript stays cached as JSON
 
     # candidates, best first (a clip may span a chunk boundary)
     candidates = identify_chunk_top_k(segments, k=3)
@@ -168,11 +175,12 @@ def ingest(url: str, keep_video: bool = False, redo: bool = False) -> None:
         return
 
     record = _new_record(clip_id, url, chunk, score)
+    record.audio_lang = lang
     if status == "accept":
-        _align_and_link(record, chunk, segments, candidates[1:])
+        _align_and_link(record, chunk, segments, candidates[1:], clip_lang=lang)
     else:
         queue_for_review(clip_id, url, chunk["chunk_id"],
-                         chunk["episode_id"], score)
+                         chunk["episode_id"], score, clip_lang=lang)
 
     out.write_text(record.to_jsonl() + "\n", encoding="utf-8")
     tag = "OK " if status == "accept" else "REV"
@@ -189,12 +197,17 @@ def _fmt_time(t) -> str:
     return f"{m}:{s:02d}"
 
 
-def _load_transcript(clip_id: str) -> list[dict] | None:
+def _load_transcript(clip_id: str) -> dict | None:
+    """Full cached transcript: {"lang": ..., "segments": [...]}.
+    Legacy list caches are treated as unknown-language (es)."""
     path = TRANSCRIPTS_DIR / f"{clip_id}.json"
     if not path.exists():
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
-
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(data, dict):
+        return data
+    return {"lang": "es", "segments": data}
+    
 
 def _show_item(n: int, total: int, item: dict, segments: list[dict],
                candidates: list[tuple[dict, float]]) -> None:
@@ -224,15 +237,16 @@ def _show_item(n: int, total: int, item: dict, segments: list[dict],
 
 
 def _approve(item: dict, segments: list[dict], chunk: dict, score: float,
-             candidates: list[tuple[dict, float]]) -> None:
+             candidates: list[tuple[dict, float]], clip_lang: str = "es") -> None:
     """Confirms the chosen candidate: writes the aligned clip record and
     registers the link, exactly as an automatic accept would."""
     clip_id = item.get("shortcode") or shortcode_from_url(item["ig_url"])
     record = _new_record(clip_id, item["ig_url"], chunk, score)
     record.match_method = "manual-review"
+    record.audio_lang = clip_lang
     others = [(c, s) for c, s in candidates
               if c["chunk_id"] != chunk["chunk_id"]]
-    _align_and_link(record, chunk, segments, others)
+    _align_and_link(record, chunk, segments, others, clip_lang=clip_lang)
     (CHUNKS_DIR / f"{clip_id}.jsonl").write_text(record.to_jsonl() + "\n",
                                                  encoding="utf-8")
     item.update(shortcode=clip_id, chunk_id=chunk["chunk_id"],
@@ -257,11 +271,13 @@ def cmd_review(_args) -> None:
     try:
         for n, item in enumerate(pending, 1):
             clip_id = item.get("shortcode") or shortcode_from_url(item["ig_url"])
-            segments = _load_transcript(clip_id)
-            if segments is None:
+            transcript = _load_transcript(clip_id)
+            if transcript is None:
                 print(f"[{n}/{len(pending)}] {clip_id}: no cached transcript "
                       "(run 'ingest --redo' for it); left pending")
                 continue
+            segments = transcript["segments"]
+            lang = transcript.get("lang", "es")
             candidates = [(c, s) for c, s in identify_chunk_top_k(segments, k=3) if c]
             if not candidates:
                 print(f"[{n}/{len(pending)}] {clip_id}: no candidate chunks; left pending")
@@ -282,7 +298,7 @@ def cmd_review(_args) -> None:
             if ans in ("y", *[str(k) for k in range(2, len(candidates) + 1)]):
                 chunk, score = candidates[0 if ans == "y" else int(ans) - 1]
                 try:
-                    _approve(item, segments, chunk, score, candidates)
+                    _approve(item, segments, chunk, score, candidates, clip_lang=lang)
                 except Exception as e:  # e.g. API error: keep it pending
                     print(f"  -> [ERR] {e}; left pending\n")
                     continue

@@ -24,50 +24,48 @@ def build_lines(
     segments: list[dict],
     chunk_lines: list[dict],
     literal_es: dict[int, str],
+    clip_lang: str = "es",
 ) -> list[Line]:
-    """
-    segments:    clip transcript [{start, end, text}]
-    chunk_lines: English chunk lines [{speaker, text, context?}]
-    literal_es:  {line_index: literal ES translation} for this chunk
-                 (from chunks_es.jsonl)
-    Context lines (carried from the previous chunk) are skipped: they
-    live in their own chunk and would be translated twice.
-    """
-    # 1. Embed everything in a single batch (dub + chunk lines)
+    """clip_lang="es": dub transcript -> text_es (source "dub").
+    clip_lang="en": the transcript IS the original -> text_en
+    (source "audio"); the literal translation covers text_es."""
     dubs = [s["text"] for s in segments]
     ens = [l["text"] for l in chunk_lines if not l.get("context")]
     embs = embed_texts(dubs + ens, task_type="SEMANTIC_SIMILARITY")
     dub_embs, en_embs = embs[:len(dubs)], embs[len(dubs):]
     en_arr = np.asarray(en_embs)
-
-    # keep the original index of each non-context line (for literal_es)
     en_idx = [i for i, l in enumerate(chunk_lines) if not l.get("context")]
 
     lines: list[Line] = []
     for seg, dub_emb in zip(segments, dub_embs):
-        # 2. Closest EN line (vectorized cosine similarity)
         denom = np.linalg.norm(en_arr, axis=1) * np.linalg.norm(dub_emb)
         scores = (en_arr @ dub_emb) / np.where(denom == 0, 1e-9, denom)
-        best_j = int(np.argmax(scores))        # position among non-context lines
-        best_i = en_idx[best_j]                # index within chunk_lines
+        best_j = int(np.argmax(scores))
+        best_i = en_idx[best_j]
 
         if scores[best_j] >= ALIGN_THRESHOLD:
-            lines.append(Line(
-                speaker=chunk_lines[best_i].get("speaker", "?"),
-                text_es=seg["text"],
-                start=seg["start"],
-                end=seg["end"],
-                text_en=chunk_lines[best_i]["text"],
-                translation_source="dub",
-            ))
+            if clip_lang == "en":
+                lines.append(Line(
+                    speaker=chunk_lines[best_i].get("speaker", "?"),
+                    text_es=literal_es.get(best_i) or "",
+                    start=seg["start"], end=seg["end"],
+                    text_en=seg["text"],
+                    translation_source="audio",
+                ))
+            else:
+                lines.append(Line(
+                    speaker=chunk_lines[best_i].get("speaker", "?"),
+                    text_es=seg["text"],
+                    start=seg["start"], end=seg["end"],
+                    text_en=chunk_lines[best_i]["text"],
+                    translation_source="dub",
+                ))
         else:
-            # no dub match: use the literal translation if available
             lit = literal_es.get(best_i)
             lines.append(Line(
                 speaker=chunk_lines[best_i].get("speaker", "?"),
                 text_es=lit if lit else "",
-                start=seg["start"],
-                end=seg["end"],
+                start=seg["start"], end=seg["end"],
                 text_en=chunk_lines[best_i]["text"],
                 translation_source="literal" if lit else "missing",
             ))
