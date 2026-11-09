@@ -159,11 +159,15 @@ def ingest(url: str, keep_video: bool = False, redo: bool = False) -> None:
         print(f"[SKIP] {clip_id}: already processed -> {out}")
         return
 
-    video = download_clip(url)
-    result = transcribe(video)
+    cached = _read_transcript_cache(clip_id)
+    if isinstance(cached, dict) and "segments" in cached:
+        result = cached    # already transcribed: no download, no Gemini call
+    else:                  # first time, or an old bare-list cache (no language)
+        video = download_clip(url)
+        result = transcribe(video)
+        if not keep_video:
+            delete_clip(url)   # the transcript stays cached as JSON
     segments, lang = result["segments"], result.get("lang", "es")
-    if not keep_video:
-        delete_clip(url)   # the transcript stays cached as JSON
 
     # candidates, best first (a clip may span a chunk boundary)
     candidates = identify_chunk_top_k(segments, k=3)
@@ -197,23 +201,32 @@ def _fmt_time(t) -> str:
     return f"{m}:{s:02d}"
 
 
-def _load_transcript(clip_id: str) -> dict | None:
-    """Full cached transcript: {"lang": ..., "segments": [...]}.
-    Legacy list caches are treated as unknown-language (es)."""
+def _read_transcript_cache(clip_id: str):
+    """Raw cache content: a dict {"lang", "segments"} (current format), a bare
+    list (old format, language unknown) or None when nothing is cached."""
     path = TRANSCRIPTS_DIR / f"{clip_id}.json"
     if not path.exists():
         return None
-    data = json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _load_transcript(clip_id: str) -> dict | None:
+    """Cached transcript as {"lang": ..., "segments": [...]}.
+    Legacy list caches are treated as Spanish."""
+    data = _read_transcript_cache(clip_id)
+    if data is None:
+        return None
     if isinstance(data, dict):
         return data
     return {"lang": "es", "segments": data}
-    
+
+
 
 def _show_item(n: int, total: int, item: dict, segments: list[dict],
-               candidates: list[tuple[dict, float]]) -> None:
+               candidates: list[tuple[dict, float]], lang: str = "es") -> None:
     print("=" * 70)
     print(f"[{n}/{total}] CLIP: {item['ig_url']}")
-    print("--- clip transcript (Spanish dub) ---")
+    print(f"--- clip transcript ({'original English audio' if lang == 'en' else 'Spanish dub'}) ---")
     for seg in segments[:6]:
         print(f"  [{_fmt_time(seg['start'])}] {seg['text']}")
     if len(segments) > 6:
@@ -283,7 +296,7 @@ def cmd_review(_args) -> None:
                 print(f"[{n}/{len(pending)}] {clip_id}: no candidate chunks; left pending")
                 continue
 
-            _show_item(n, len(pending), item, segments, candidates)
+            _show_item(n, len(pending), item, segments, candidates, lang)
             options = "/".join(str(k) for k in range(2, len(candidates) + 1))
             prompt = ("[y] approve #1  "
                       + (f"[{options}] approve that candidate  " if options else "")
