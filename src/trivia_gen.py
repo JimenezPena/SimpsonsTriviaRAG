@@ -222,8 +222,9 @@ _quiz_pool = None
 
 
 def load_quiz_pool():
-    """chunk_id -> {chunk_id, ig_url, shortcode, season, title,
-    text_es, text_en}. Loaded once, then cached."""
+    """shortcode -> {chunk_id, ig_url, shortcode, audio_lang, season, title,
+    text_es, text_en, text_source}: one entry per clip. Loaded once, then
+    cached."""
     global _quiz_pool
     if _quiz_pool is None:
         try:
