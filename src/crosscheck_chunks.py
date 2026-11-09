@@ -19,7 +19,7 @@ import chromadb
 DB_PATH = "batch_vector_db"
 COLLECTION_NAME = "langchain"   # default collection name used by langchain-chroma
 EPISODES_CSV = "data/simpsons_episodes.csv"
-MAX_SEASON = 13                 # must match ingest.py
+MAX_SEASON = 10                 # must match ingest.py
 
 
 def load_chunks():

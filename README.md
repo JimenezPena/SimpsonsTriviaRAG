@@ -22,7 +22,7 @@ On top of the script-based RAG, an optional pipeline (`src/spanish_align`) takes
 
 ### Script RAG
 * **Scene-aware chunking** — script lines are grouped by episode and split on scene changes (`location_id`), in blocks of ~20 dialogue lines with a 5-line overlap. The first chunk of each scene includes the last lines of the previous one as context, so gags that span a scene cut keep their continuity.
-* **Season filtering** — only classic episodes are indexed (`MAX_SEASON = 13` by default; configurable).
+* **Season filtering** — only classic episodes are indexed (`MAX_SEASON = 10` by default; configurable).
 * **Resumable ingestion** — episode-level checkpoint (`ingested_episodes.json`). If the API quota interrupts the run, relaunching the script resumes exactly where it stopped. Partially ingested episodes are detected and rebuilt automatically, and deterministic chunk IDs (`upsert`) prevent duplicates.
 * **Quota-friendly** — one real API request per episode (~30 chunks), with retries and backoff on `429 RESOURCE_EXHAUSTED`.
 
@@ -170,6 +170,8 @@ PYTHONPATH=src python -m spanish_align.cli cleanup   # delete locally cached vid
 ```
 
 `ingest` skips clips that were already processed (use `--redo` to reprocess them) and `--keep-video` keeps the downloaded video instead of deleting it. A clip whose transcript is already cached is not downloaded or transcribed again, so reprocessing only repeats the matching and alignment; to re-transcribe a clip, delete its file in `data/ingest/transcripts/`. `review` shows each doubtful clip with up to 3 candidate chunks: `y` approves the first, `2`/`3` approve another candidate, `n` rejects, `s` skips, `q` quits; every decision is saved immediately.
+
+**Season/episode hint.** If you know (or suspect) where a clip comes from, restrict the search so only those chunks compete: `ingest --urls clips.txt --scope S05` (also `5`, `S05E10`, `5x10`, or a list such as `5,6`); a line of the URL file can carry its own hint (`https://www.instagram.com/reel/XXXX/ S05E10`) and overrides `--scope`. In `review`, `--scope S05` restricts the whole session and the `f` key sets or clears the filter for the current clip (the hint is remembered in the queue). The hint narrows the candidates; it does not lower the thresholds, so a clip that really is from another episode still scores low.
 
 **Reprocessing everything from scratch:** move `data/ingest/ig_links.jsonl`, `data/ingest/review_queue.jsonl` and `data/ingest/chunks/` somewhere else (a backup folder) and run `ingest --urls <your list>` again, then `review` and `export_quiz_pool`. Starting from empty registries avoids stale links to chunks a clip no longer matches. Instagram rate-limits anonymous listing; if `collect_urls` returns errors or nothing, add `--cookies-from-browser safari` (or `chrome`, `firefox`).
 

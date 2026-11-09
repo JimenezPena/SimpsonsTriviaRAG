@@ -38,7 +38,7 @@ DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 COLLECTION_NAME = "langchain"
 LLM_MODEL = "gemini-3.5-flash-lite"
 LLM_TIMEOUT = 25                 # seconds per LLM HTTP call (must stay well below gunicorn --timeout)
-MAX_SEASON = 13
+MAX_SEASON = 10
 TOP_K = 3                        # chunks SENT to the LLM in free-form Q&A
 # =======================================================
 

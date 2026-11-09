@@ -3,7 +3,10 @@
 Run from the project root with PYTHONPATH=src:
     PYTHONPATH=src python -m spanish_align.cli ingest --url <IG-URL>    # single clip
     PYTHONPATH=src python -m spanish_align.cli ingest --urls clips.txt  # batch
+    PYTHONPATH=src python -m spanish_align.cli ingest --urls clips.txt --scope S05  # season hint
+    #   (a line of the file may carry its own hint:  <url> S05E10)
     PYTHONPATH=src python -m spanish_align.cli review    # interactive review of doubtful clips
+    PYTHONPATH=src python -m spanish_align.cli review --scope S05  # ([f] sets it per clip)
     PYTHONPATH=src python -m spanish_align.cli cleanup   # delete local videos
 
 Startup order (no embedding is ever recalculated; chunk embeddings are
@@ -24,7 +27,8 @@ from .config import (
 )
 from .media import shortcode_from_url, delete_clip, media_stats
 from .models import Chunk, parse_episode_id
-from .chunk_match import identify_chunk_top_k, match_status
+from .chunk_match import (identify_chunk_top_k, match_status, parse_scope,
+                          embed_clip)
 from .align import build_lines
 
 
@@ -97,7 +101,8 @@ def register_ig_link(clip_id: str, url: str, chunk_id: str,
 
 
 def queue_for_review(clip_id: str, url: str, chunk_id: str,
-                     episode_id: str, score: float, clip_lang: str = "es") -> None:
+                     episode_id: str, score: float, clip_lang: str = "es",
+                     scope: str | None = None) -> None:
     """Adds a doubtful clip to the review queue (once per clip)."""
     if any(r.get("shortcode") == clip_id or r.get("ig_url") == url
            for r in _read_jsonl(REVIEW_QUEUE)):
@@ -110,6 +115,7 @@ def queue_for_review(clip_id: str, url: str, chunk_id: str,
         "score": round(score, 3),
         "lang": clip_lang,
         "status": "pending",
+        **({"scope": scope} if scope else {}),
     })
 
 
@@ -149,7 +155,10 @@ def _align_and_link(record: Chunk, chunk: dict, segments: list[dict],
                     clip_lang=clip_lang)
                     
 
-def ingest(url: str, keep_video: bool = False, redo: bool = False) -> None:
+def ingest(url: str, keep_video: bool = False, redo: bool = False,
+           scope: str | None = None) -> None:
+    """scope: optional season/episode hint ('5', 'S05', 'S05E10'): only those
+    chunks are considered when matching."""
     from .media import download_clip
     from .google_client import transcribe  # deferred: API key checked on use
 
@@ -170,7 +179,11 @@ def ingest(url: str, keep_video: bool = False, redo: bool = False) -> None:
     segments, lang = result["segments"], result.get("lang", "es")
 
     # candidates, best first (a clip may span a chunk boundary)
-    candidates = identify_chunk_top_k(segments, k=3)
+    parse_scope(scope)   # fail early on a malformed hint
+    candidates = identify_chunk_top_k(segments, k=3, scope=scope)
+    if not candidates:
+        print(f"[SKIP] {clip_id}: no chunks in scope '{scope}'")
+        return
     chunk, score = candidates[0]
     status = match_status(score)
 
@@ -184,7 +197,8 @@ def ingest(url: str, keep_video: bool = False, redo: bool = False) -> None:
         _align_and_link(record, chunk, segments, candidates[1:], clip_lang=lang)
     else:
         queue_for_review(clip_id, url, chunk["chunk_id"],
-                         chunk["episode_id"], score, clip_lang=lang)
+                         chunk["episode_id"], score, clip_lang=lang,
+                         scope=scope)
 
     out.write_text(record.to_jsonl() + "\n", encoding="utf-8")
     tag = "OK " if status == "accept" else "REV"
@@ -267,19 +281,27 @@ def _approve(item: dict, segments: list[dict], chunk: dict, score: float,
                 status="approved")
 
 
-def cmd_review(_args) -> None:
+def cmd_review(args) -> None:
     """Interactive review of the clips in review_queue.jsonl.
 
     The candidate chunks are recomputed from the cached transcript, so it
     also works with queue entries written by older versions (which only
     stored ig_url/score). Every decision is saved immediately: the review
-    can be interrupted at any time and resumed later."""
+    can be interrupted at any time and resumed later.
+
+    Season/episode hint: --scope S05 (or 5, S05E10, 5,6 ...) restricts the
+    candidates for the whole session; a clip queued by 'ingest --scope'
+    keeps its own hint; and the [f] key sets/clears it for the current clip
+    (e.g. you recognise it as season 5 and the right episode was not among
+    the top 3). The hint is remembered with the clip."""
     items = _read_jsonl(REVIEW_QUEUE)
     pending = [i for i in items if i.get("status") == "pending"]
     print(f"Review queue: {len(pending)} pending / {len(items)} total")
     if not pending:
         return
 
+    session_scope = getattr(args, "scope", None)
+    parse_scope(session_scope)
     approved = rejected = 0
     try:
         for n, item in enumerate(pending, 1):
@@ -291,20 +313,50 @@ def cmd_review(_args) -> None:
                 continue
             segments = transcript["segments"]
             lang = transcript.get("lang", "es")
-            candidates = [(c, s) for c, s in identify_chunk_top_k(segments, k=3) if c]
+            scope = item.get("scope") or session_scope
+            clip_emb = embed_clip(segments)     # once per clip, reused by [f]
+            candidates = [(c, s) for c, s in identify_chunk_top_k(
+                segments, k=3, scope=scope, clip_emb=clip_emb) if c]
             if not candidates:
-                print(f"[{n}/{len(pending)}] {clip_id}: no candidate chunks; left pending")
+                print(f"[{n}/{len(pending)}] {clip_id}: no candidate chunks"
+                      f"{f' in scope {scope}' if scope else ''}; left pending")
                 continue
 
-            _show_item(n, len(pending), item, segments, candidates, lang)
-            options = "/".join(str(k) for k in range(2, len(candidates) + 1))
-            prompt = ("[y] approve #1  "
-                      + (f"[{options}] approve that candidate  " if options else "")
-                      + "[n] reject  [s] skip  [q] quit: ")
-            valid = {"y", "n", "s", "q"} | {str(k) for k in range(2, len(candidates) + 1)}
-            ans = ""
-            while ans not in valid:
-                ans = input(prompt).strip().lower()
+            while True:
+                _show_item(n, len(pending), item, segments, candidates, lang)
+                if scope:
+                    print(f"(search restricted to: {scope})")
+                options = "/".join(str(k) for k in range(2, len(candidates) + 1))
+                prompt = ("[y] approve #1  "
+                          + (f"[{options}] approve that candidate  " if options else "")
+                          + "[f] filter season/episode  [n] reject  [s] skip  [q] quit: ")
+                valid = {"y", "n", "s", "q", "f"} | {str(k) for k in range(2, len(candidates) + 1)}
+                ans = ""
+                while ans not in valid:
+                    ans = input(prompt).strip().lower()
+                if ans != "f":
+                    break
+                text = input("  season/episode (e.g. 5, S05, S05E10, 5,6; "
+                             "empty = no filter): ").strip()
+                try:
+                    new_scope = text or None
+                    parse_scope(new_scope)
+                except ValueError as e:
+                    print(f"  {e}")
+                    continue
+                found = [(c, s) for c, s in identify_chunk_top_k(
+                    segments, k=3, scope=new_scope, clip_emb=clip_emb) if c]
+                if not found:
+                    print("  no chunks match that filter; keeping the previous candidates")
+                    continue
+                scope, candidates = new_scope, found
+                if scope:
+                    item["scope"] = scope
+                else:
+                    item.pop("scope", None)
+                    scope = session_scope
+                    candidates = [(c, s) for c, s in identify_chunk_top_k(
+                        segments, k=3, scope=scope, clip_emb=clip_emb) if c]
 
             if ans == "q":
                 break
@@ -336,10 +388,14 @@ def cmd_review(_args) -> None:
 # --------------------------------------------------------------------------
 
 def cmd_ingest(args) -> None:
+    parse_scope(args.scope)
     urls = [args.url] if args.url else Path(args.urls).read_text().splitlines()
-    for url in filter(None, (u.strip() for u in urls)):
+    for line in filter(None, (u.strip() for u in urls)):
+        # a line may carry its own hint:  <url> S05  /  <url> S05E10
+        url, _, hint = line.partition(" ")
         try:
-            ingest(url, keep_video=args.keep_video, redo=args.redo)
+            ingest(url, keep_video=args.keep_video, redo=args.redo,
+                   scope=hint.strip() or args.scope)
         except Exception as e:  # a dead URL must not break the batch
             print(f"[ERR] {url}: {e}")
 
@@ -364,9 +420,14 @@ def main() -> None:
                    help="do not delete the video after transcription")
     s.add_argument("--redo", action="store_true",
                    help="reprocess clips that were already ingested")
+    s.add_argument("--scope", help="season/episode hint for all clips, e.g. "
+                   "5, S05, S05E10, 5,6 (a line of --urls can override it: "
+                   "'<url> S05E10')")
     s.set_defaults(func=cmd_ingest)
 
     s = sub.add_parser("review", help="interactively review doubtful clip matches")
+    s.add_argument("--scope", help="restrict candidates to a season/episode, "
+                   "e.g. 5, S05, S05E10 ([f] changes it per clip)")
     s.set_defaults(func=cmd_review)
 
     s = sub.add_parser("cleanup", help="delete local videos")
