@@ -171,6 +171,17 @@ PYTHONPATH=src python -m spanish_align.cli cleanup   # delete locally cached vid
 
 `ingest` skips clips that were already processed (use `--redo` to reprocess them) and `--keep-video` keeps the downloaded video instead of deleting it. A clip whose transcript is already cached is not downloaded or transcribed again, so reprocessing only repeats the matching and alignment; to re-transcribe a clip, delete its file in `data/ingest/transcripts/`. `review` shows each doubtful clip with up to 3 candidate chunks: `y` approves the first, `2`/`3` approve another candidate, `n` rejects, `s` skips, `q` quits; every decision is saved immediately.
 
+**Reprocessing the review queue** (e.g. after adding seasons to the vector DB): refresh the chunk data first, then re-match the queued clips. Transcripts are cached, so nothing is downloaded or transcribed again.
+
+```bash
+PYTHONPATH=src python -m spanish_align.export_from_db      # new chunks + embeddings
+PYTHONPATH=src python -m spanish_align.translate_chunks    # literal ES for the new chunks (resumable)
+PYTHONPATH=src python -m spanish_align.cli reprocess-review
+PYTHONPATH=src python -m spanish_align.cli review          # whatever is still doubtful
+```
+
+Clips that are now accepted leave the queue and are linked; the rest are re-queued with their new best candidate (the old queue is saved as `review_queue.jsonl.bak`). The command aborts if the embeddings or translations are visibly incomplete (`--force` overrides it).
+
 **Season/episode hint.** If you know (or suspect) where a clip comes from, restrict the search so only those chunks compete: `ingest --urls clips.txt --scope S05` (also `5`, `S05E10`, `5x10`, or a list such as `5,6`); a line of the URL file can carry its own hint (`https://www.instagram.com/reel/XXXX/ S05E10`) and overrides `--scope`. In `review`, `--scope S05` restricts the whole session and the `f` key sets or clears the filter for the current clip (the hint is remembered in the queue). The hint narrows the candidates; it does not lower the thresholds, so a clip that really is from another episode still scores low.
 
 **Reprocessing everything from scratch:** move `data/ingest/ig_links.jsonl`, `data/ingest/review_queue.jsonl` and `data/ingest/chunks/` somewhere else (a backup folder) and run `ingest --urls <your list>` again, then `review` and `export_quiz_pool`. Starting from empty registries avoids stale links to chunks a clip no longer matches. Instagram rate-limits anonymous listing; if `collect_urls` returns errors or nothing, add `--cookies-from-browser safari` (or `chrome`, `firefox`).

@@ -5,6 +5,7 @@ Run from the project root with PYTHONPATH=src:
     PYTHONPATH=src python -m spanish_align.cli ingest --urls clips.txt  # batch
     PYTHONPATH=src python -m spanish_align.cli ingest --urls clips.txt --scope S05  # season hint
     #   (a line of the file may carry its own hint:  <url> S05E10)
+    PYTHONPATH=src python -m spanish_align.cli reprocess-review  # re-match the queued clips (after adding seasons)
     PYTHONPATH=src python -m spanish_align.cli review    # interactive review of doubtful clips
     PYTHONPATH=src python -m spanish_align.cli review --scope S05  # ([f] sets it per clip)
     PYTHONPATH=src python -m spanish_align.cli cleanup   # delete local videos
@@ -23,7 +24,7 @@ from pathlib import Path
 
 from .config import (
     CHUNKS_DIR, CHUNKS_ES, TRANSCRIPTS_DIR, MEDIA_DIR,
-    REVIEW_QUEUE, IG_LINKS, ensure_dirs,
+    REVIEW_QUEUE, IG_LINKS, CHUNKS_EN, CHUNK_EMBEDDINGS, ensure_dirs,
 )
 from .media import shortcode_from_url, delete_clip, media_stats
 from .models import Chunk, parse_episode_id
@@ -156,9 +157,10 @@ def _align_and_link(record: Chunk, chunk: dict, segments: list[dict],
                     
 
 def ingest(url: str, keep_video: bool = False, redo: bool = False,
-           scope: str | None = None) -> None:
+           scope: str | None = None) -> str:
     """scope: optional season/episode hint ('5', 'S05', 'S05E10'): only those
-    chunks are considered when matching."""
+    chunks are considered when matching.
+    Returns 'accept' | 'review' | 'discard' | 'skip' (already processed)."""
     from .media import download_clip
     from .google_client import transcribe  # deferred: API key checked on use
 
@@ -166,7 +168,7 @@ def ingest(url: str, keep_video: bool = False, redo: bool = False,
     out = CHUNKS_DIR / f"{clip_id}.jsonl"
     if out.exists() and not redo:
         print(f"[SKIP] {clip_id}: already processed -> {out}")
-        return
+        return "skip"
 
     cached = _read_transcript_cache(clip_id)
     if isinstance(cached, dict) and "segments" in cached:
@@ -183,13 +185,13 @@ def ingest(url: str, keep_video: bool = False, redo: bool = False,
     candidates = identify_chunk_top_k(segments, k=3, scope=scope)
     if not candidates:
         print(f"[SKIP] {clip_id}: no chunks in scope '{scope}'")
-        return
+        return "discard"
     chunk, score = candidates[0]
     status = match_status(score)
 
     if status == "discard" or chunk is None:
         print(f"[SKIP] {clip_id}: no reliable match (score={score:.2f})")
-        return
+        return "discard"
 
     record = _new_record(clip_id, url, chunk, score)
     record.audio_lang = lang
@@ -204,6 +206,72 @@ def ingest(url: str, keep_video: bool = False, redo: bool = False,
     tag = "OK " if status == "accept" else "REV"
     print(f"[{tag}] {clip_id} -> {chunk['episode_id']} / {chunk['chunk_id']} "
           f"(conf={score:.2f})")
+    return status
+
+
+def reprocess_review(scope: str | None = None, force: bool = False) -> None:
+    """Re-runs the whole matching + alignment for every clip still pending
+    in the review queue (e.g. after adding seasons to the vector DB).
+
+    Transcripts are cached, so nothing is downloaded or transcribed again;
+    only 1 embedding per clip (+ the alignment when it is now accepted).
+    A clip that is now accepted leaves the queue and is linked; one that is
+    still doubtful is re-queued with its new candidate; a clip that ends in
+    discard/error keeps its old queue entry. The previous queue is saved as
+    review_queue.jsonl.bak."""
+    items = _read_jsonl(REVIEW_QUEUE)
+    pending = [i for i in items if i.get("status") == "pending"]
+    if not pending:
+        print("Review queue: nothing pending")
+        return
+
+    chunks_en = _read_jsonl(CHUNKS_EN)
+    en_ids = {c["chunk_id"] for c in chunks_en}
+    seasons = sorted({c["season"] for c in chunks_en})
+    print(f"Chunks available: {len(en_ids)} "
+          f"(seasons {seasons[0]}-{seasons[-1]})" if seasons else "No chunks")
+    done_es = {c["chunk_id"] for c in _read_jsonl(CHUNKS_ES)}
+    n_emb = (len(json.loads(CHUNK_EMBEDDINGS.read_text(encoding="utf-8")))
+             if CHUNK_EMBEDDINGS.exists() else 0)
+    if n_emb < len(en_ids):
+        print(f"WARNING: {n_emb} chunk embeddings vs {len(en_ids)} chunks: "
+              "run 'python -m spanish_align.export_from_db' first.")
+        if not force:
+            raise SystemExit("Aborted (use --force to continue anyway).")
+    missing_es = len(en_ids - done_es)
+    if missing_es:
+        print(f"WARNING: {missing_es} chunks have no Spanish translation yet: "
+              "run 'python -m spanish_align.translate_chunks' first, otherwise "
+              "clips matched to them cannot be aligned.")
+        if not force:
+            raise SystemExit("Aborted (use --force to continue anyway).")
+
+    _write_jsonl(REVIEW_QUEUE.with_name(REVIEW_QUEUE.name + ".bak"), items)
+    # take the pending items out so ingest can re-queue them with new data
+    _write_jsonl(REVIEW_QUEUE, [i for i in items if i.get("status") != "pending"])
+
+    accepted = requeued = kept = changed = 0
+    for n, item in enumerate(pending, 1):
+        url = item["ig_url"]
+        print(f"[{n}/{len(pending)}] ", end="")
+        try:
+            status = ingest(url, redo=True, scope=item.get("scope") or scope)
+        except Exception as e:
+            print(f"[ERR] {url}: {e}")
+            status = "error"
+        if status == "accept":
+            accepted += 1
+        elif status == "review":
+            requeued += 1
+            new = next((r for r in _read_jsonl(REVIEW_QUEUE)
+                        if r.get("ig_url") == url), {})
+            changed += new.get("chunk_id") != item.get("chunk_id")
+        else:                       # discard / error / skip: keep the old entry
+            kept += 1
+            _append_jsonl(REVIEW_QUEUE, item)
+    print(f"\nNow accepted: {accepted} | still in review: {requeued} "
+          f"({changed} with a different top candidate) | unchanged: {kept}")
+    print("Next: 'review' for the ones still pending, then export_quiz_pool.")
 
 
 # --------------------------------------------------------------------------
@@ -400,6 +468,11 @@ def cmd_ingest(args) -> None:
             print(f"[ERR] {url}: {e}")
 
 
+def cmd_reprocess_review(args) -> None:
+    parse_scope(args.scope)
+    reprocess_review(scope=args.scope, force=args.force)
+
+
 def cmd_cleanup(_args) -> None:
     stats = media_stats()
     print(f"Video cache: {stats['count']} files, {stats['total_mb']} MB")
@@ -429,6 +502,14 @@ def main() -> None:
     s.add_argument("--scope", help="restrict candidates to a season/episode, "
                    "e.g. 5, S05, S05E10 ([f] changes it per clip)")
     s.set_defaults(func=cmd_review)
+
+    s = sub.add_parser("reprocess-review",
+                       help="re-run matching for the clips pending in the review "
+                            "queue (e.g. after adding seasons to the vector DB)")
+    s.add_argument("--scope", help="optional season/episode hint for all of them")
+    s.add_argument("--force", action="store_true",
+                   help="continue even if embeddings/translations are incomplete")
+    s.set_defaults(func=cmd_reprocess_review)
 
     s = sub.add_parser("cleanup", help="delete local videos")
     s.set_defaults(func=cmd_cleanup)

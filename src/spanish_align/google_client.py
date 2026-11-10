@@ -157,8 +157,9 @@ def transcribe(video) -> dict:
 # Literal EN -> ES translation
 # --------------------------------------------------------------------------
 
-def translate_literal(lines_en: list[str]) -> list[str]:
-    """Literal translation (not the official dub), line by line."""
+def _translate_once(lines_en: list[str]) -> list[str]:
+    """One API call. Raises ValueError if the reply is not a JSON array of
+    exactly len(lines_en) strings (truncated output, wrong count...)."""
     prompt = (
         "Translate each line of this The Simpsons script from English to "
         "Spanish. Use LITERAL translation (not the official dub): keep the "
@@ -171,5 +172,47 @@ def translate_literal(lines_en: list[str]) -> list[str]:
         "generationConfig": {"temperature": 0.0},
     }
     resp = _post(GEMINI_MODEL, "generateContent", payload)
-    raw = resp["candidates"][0]["content"]["parts"][0]["text"]
-    return json.loads(_strip_fences(raw))
+    try:
+        cand = resp["candidates"][0]
+        raw = cand["content"]["parts"][0]["text"]
+    except (KeyError, IndexError):
+        # blocked / empty reply: no text at all
+        why = (resp.get("promptFeedback", {}).get("blockReason")
+               or (resp.get("candidates") or [{}])[0].get("finishReason"))
+        raise ValueError(f"no text in the reply (reason: {why})")
+    try:
+        out = json.loads(_strip_fences(raw))
+    except json.JSONDecodeError as e:
+        raise ValueError(f"invalid JSON (finishReason={cand.get('finishReason')}): {e}")
+    if (not isinstance(out, list) or len(out) != len(lines_en)
+            or not all(isinstance(x, str) for x in out)):
+        n = len(out) if isinstance(out, list) else type(out).__name__
+        raise ValueError(f"expected {len(lines_en)} strings, got {n}")
+    return out
+
+
+def translate_literal(lines_en: list[str]) -> list[str]:
+    """Literal translation (not the official dub), line by line.
+
+    The reply is validated (valid JSON, same number of lines: a count
+    mismatch would silently shift every translation). On failure the call is
+    retried once, then the batch is split in two and each half translated
+    separately; a single line that still fails (e.g. blocked by the API's
+    content filters) is kept in English and reported, so one bad line cannot
+    abort a long run."""
+    if not lines_en:
+        return []
+    last = None
+    for _ in range(2):
+        try:
+            return _translate_once(lines_en)
+        except ValueError as e:
+            last = e
+    if len(lines_en) == 1:
+        print(f"    [warn] could not translate {lines_en[0]!r}: {last}; "
+              "kept in English")
+        return list(lines_en)
+    print(f"    [warn] batch of {len(lines_en)} lines failed ({last}); "
+          "splitting it in two")
+    mid = len(lines_en) // 2
+    return translate_literal(lines_en[:mid]) + translate_literal(lines_en[mid:])
