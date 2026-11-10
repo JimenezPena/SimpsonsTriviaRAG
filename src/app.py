@@ -169,14 +169,23 @@ def config():
 @app.post("/api/trivia")
 def api_trivia():
     """Generates a new trivia question. Answer stays on the server.
-    mode="clips": bilingual question from a chunk with an aligned clip."""
+    mode="clips": bilingual question from a chunk with an aligned clip;
+    lang ("es" | "en") restricts it to clips whose audio is in that language,
+    and the fragment given to the LLM is what the clip actually says."""
     t0 = time.time()
     mode = (request.json or {}).get("mode", "classic")
 
     if mode == "clips":
-        entry = tg.random_quiz_chunk()
+        lang = (request.json or {}).get("lang")
+        if lang not in (None, "es", "en"):
+            return jsonify({"error": "lang must be 'es' or 'en'"}), 400
+        try:
+            entry = tg.random_quiz_chunk(lang)
+        except LookupError as e:
+            return jsonify({"error": str(e), "code": "no_clips"}), 404
+        text = entry["text_en"] if lang == "en" else entry["text_es"]
         prompt = (f"Fragmento de guion (temporada {entry['season']}, episodio "
-                  f"\"{entry['title']}\"):\n\n{entry['text_es']}\n\n"
+                  f"\"{entry['title']}\"):\n\n{text}\n\n"
                   f"Genera la pregunta de trivia (castellano + inglés).")
         try:
             out = tg.ask_llm(prompt, system=tg.TRIVIA_ES_SYSTEM)
@@ -257,13 +266,15 @@ def api_ask():
     question = (body.get("question") or "").strip()
     season = body.get("season")
     top_n = int(body.get("top_n") or tg.TOP_K)
+    lang = body.get("lang") if body.get("lang") in ("es", "en") else "en"
     if not question:
         return jsonify({"error": "empty question"}), 400
 
     results = tg.retrieve(get_store(), question, season,
                           k=max(top_n, tg.TOP_K))
     if not results:
-        return jsonify({"answer": "Nothing found for that question.",
+        return jsonify({"answer": "No he encontrado nada para esa pregunta."
+                        if lang == "es" else "Nothing found for that question.",
                         "sources": []})
 
     sent = results[:tg.TOP_K]
@@ -272,7 +283,9 @@ def api_ask():
         f"{doc.page_content}"
         for doc, score in sent
     )
-    prompt = f"Context:\n\n{context}\n\nQuestion: {question}"
+    reply_in = "Spanish (castellano)" if lang == "es" else "English"
+    prompt = (f"Context:\n\n{context}\n\nQuestion: {question}\n\n"
+              f"Write the answer in {reply_in}.")
     try:
         answer = tg.ask_llm(prompt, system=tg.ANSWER_SYSTEM)
     except RuntimeError as e:

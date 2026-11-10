@@ -77,6 +77,24 @@
       .sources details { margin-top: 6px; }
       .sources summary { cursor: pointer; color: var(--blue); }
       .sources pre { background: #f4f4f4; padding: 8px; overflow-x: auto; white-space: pre-wrap; }
+      /* 👉 INSTAGRAM CLIP SIZE: the three variables below are the knobs.
+         Width 100% = same width as the quiz answers (the card's inner width);
+         lower --clip-max-width (e.g. 360px) for a narrower clip, and raise
+         or lower --clip-height to fit the video (Instagram centres its player
+         inside the frame, so a tall frame leaves empty space below it). */
+      #clipBox {
+        --clip-width: 100%;
+        --clip-max-width: 100%;
+        --clip-height: 640px;
+      }
+      #clipBox iframe {
+        display: block;
+        width: var(--clip-width);
+        max-width: var(--clip-max-width);
+        height: var(--clip-height);
+        border: 0;
+        margin: 12px auto 0;
+      }
       .error { color: #c62828; margin-top: 12px; }
       .hint { color: #777; font-size: 13px; }
     </style>
@@ -84,7 +102,7 @@
   <body>
     <header>
       <img class="logo" src="images/LogoSimpsons.jpg" alt="The Simpsons" />
-      <h1>RAG Trivia</h1>
+      <h1 data-i18n="title">RAG Trivia</h1>
       <div class="controls">
         <button id="langToggle">🇪🇸 ES</button>
       </div>
@@ -92,15 +110,15 @@
 
     <main>
       <div class="tabs">
-        <button id="tabTrivia" class="active">🎯 Trivia</button>
-        <button id="tabAsk">💬 Ask anything</button>
+        <button id="tabTrivia" class="active" data-i18n="tabTrivia">🎯 Trivia</button>
+        <button id="tabAsk" data-i18n="tabAsk">💬 Ask anything</button>
       </div>
 
       <!-- TRIVIA TAB -->
       <section id="triviaPanel">
         <div class="card" id="triviaCard">
-          <button id="newQuestion">New question</button>
-          <p class="hint">Generates a question from a random chunk of the vector DB.</p>
+          <button id="newQuestion" data-i18n="newQuestion">New question</button>
+          <p class="hint" data-i18n="triviaHint">Generates a question from a random chunk of the vector DB.</p>
           <div id="triviaBody"></div>
         </div>
       </section>
@@ -109,8 +127,8 @@
       <section id="askPanel" style="display:none">
         <div class="card">
           <div class="askbox">
-            <input id="askInput" placeholder="e.g. What pet did Lisa have..." />
-            <button id="askSend">Ask</button>
+            <input id="askInput" data-i18n-placeholder="askPlaceholder" placeholder="e.g. What pet did Lisa have..." />
+            <button id="askSend" data-i18n="ask">Ask</button>
           </div>
           <div id="askBody"></div>
         </div>
@@ -119,6 +137,47 @@
 
     <script>
       const $ = (id) => document.getElementById(id);
+
+      // ---- interface language ----
+      let LANG = "es";
+      const I18N = {
+        es: {
+          title: "RAG Trivia",
+          tabTrivia: "🎯 Trivia", tabAsk: "💬 Pregunta lo que quieras",
+          newQuestion: "Nueva pregunta",
+          triviaHint: "Genera una pregunta a partir de un fragmento de un episodio, con su clip.",
+          askPlaceholder: "p. ej. ¿Qué mascota tenía Lisa...?", ask: "Preguntar",
+          generating: "Generando pregunta (LLM)…", retrieving: "Buscando fragmentos y pensando…",
+          langChanged: "Has cambiado de idioma: los clips dependen del idioma, pulsa «Nueva pregunta».",
+          correct: "🎉 ¡Correcto!", wrong: "😢 ¡Fallo!",
+          season: "T", watch: "Ver en Instagram",
+          distance: "distancia", sent: "enviado", notSent: "no enviado",
+          requestFailed: "la petición ha fallado",
+          noClips: "Todavía no hay clips con audio en castellano.",
+        },
+        en: {
+          title: "RAG Trivia",
+          tabTrivia: "🎯 Trivia", tabAsk: "💬 Ask anything",
+          newQuestion: "New question",
+          triviaHint: "Generates a question from an episode fragment, with its clip.",
+          askPlaceholder: "e.g. What pet did Lisa have...", ask: "Ask",
+          generating: "Generating question (LLM)…", retrieving: "Retrieving chunks and thinking…",
+          langChanged: "Language changed: clips depend on the language, press “New question”.",
+          correct: "🎉 Correct!", wrong: "😢 Wrong!",
+          season: "S", watch: "Watch on Instagram",
+          distance: "distance", sent: "sent", notSent: "not sent",
+          requestFailed: "request failed",
+          noClips: "There are no clips with English audio yet.",
+        },
+      };
+      const t = (key) => I18N[LANG][key];
+
+      function applyLang() {
+        document.documentElement.lang = LANG;
+        document.querySelectorAll("[data-i18n]").forEach((el) => (el.textContent = t(el.dataset.i18n)));
+        document.querySelectorAll("[data-i18n-placeholder]").forEach((el) => (el.placeholder = t(el.dataset.i18nPlaceholder)));
+        $("langToggle").textContent = LANG === "es" ? "🇪🇸 ES" : "🇬🇧 EN";
+      }
 
       // ---- Homer thinking gif while the LLM works ----
       const HOMER_GIFS = [
@@ -145,27 +204,32 @@
       $("tabAsk").onclick = () => showTab("ask");
 
       // ---- trivia ----
-      let LANG = "es";
-      let currentQ = null;   // last question, to re-render on language switch
+      let currentQ = null;   // question on screen that has NOT been revealed yet
 
       $("langToggle").onclick = () => {
         LANG = LANG === "es" ? "en" : "es";
-        $("langToggle").textContent = LANG === "es" ? "🇪🇸 ES" : "🇬🇧 EN";
-        if (currentQ) renderTrivia(currentQ);
+        applyLang();
+        // The clip shown on reveal must match the interface language, and the
+        // pending question was drawn for the other one: drop it. A question
+        // that was already answered stays on screen as it is.
+        if (currentQ) {
+          currentQ = null;
+          $("triviaBody").innerHTML = `<p class="hint">${t("langChanged")}</p>`;
+        }
       };
 
       async function newQuestion() {
         const body = $("triviaBody");
         currentQ = null;
-        body.innerHTML = thinking("Generating question (LLM)…");
+        body.innerHTML = thinking(t("generating"));
         try {
           const res = await fetch("/api/trivia", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ mode: "clips" }),
+            body: JSON.stringify({ mode: "clips", lang: LANG }),
           });
           const data = await res.json();
-          if (!res.ok) throw new Error(data.error || "request failed");
+          if (!res.ok) throw new Error(data.code === "no_clips" ? t("noClips") : (data.error || t("requestFailed")));
           currentQ = data;
           renderTrivia(data);
         } catch (e) {
@@ -189,6 +253,7 @@
       }
 
       async function reveal(qid, guess, clicked) {
+        currentQ = null;     // answered: a later language switch keeps the result
         const buttons = $("triviaBody").querySelectorAll(".options button");
         buttons.forEach((b) => (b.disabled = true));
         try {
@@ -198,23 +263,22 @@
             body: JSON.stringify({ qid, guess, lang: LANG }),
           });
           const data = await res.json();
-          if (!res.ok) throw new Error(data.error || "request failed");
+          if (!res.ok) throw new Error(data.error || t("requestFailed"));
           buttons.forEach((b) => {
             if (b.textContent[0] === data.answer.trim()[0].toUpperCase()) b.classList.add("correct");
             else if (b === clicked) b.classList.add("wrong");
           });
           const v = $("verdict");
-          v.textContent = data.correct ? "🎉 ¡Correcto!" : "😢 ¡Fallo!";
+          v.textContent = data.correct ? t("correct") : t("wrong");
           v.className = "verdict " + (data.correct ? "ok" : "ko");
           $("funfact").textContent = data.fun_fact ? "💡 " + data.fun_fact : "";
           if (data.source)
-            $("source").textContent = `📺 T${data.source.season} — ${data.source.title}`;
+            $("source").textContent = `📺 ${t("season")}${data.source.season} — ${data.source.title}`;
           if (data.shortcode) {
             $("clipBox").innerHTML = `
               <iframe src="https://www.instagram.com/reel/${data.shortcode}/embed"
-                      width="360" height="480" frameborder="0" scrolling="no"
-                      allowtransparency="true"></iframe>
-              <p class="hint"><a href="${data.ig_url}" target="_blank" rel="noopener">Ver en Instagram</a></p>`;
+                      scrolling="no" allowtransparency="true"></iframe>
+              <p class="hint"><a href="${data.ig_url}" target="_blank" rel="noopener">${t("watch")}</a></p>`;
           }
         } catch (e) {
           $("verdict").innerHTML = `<span class="error">⚠️ ${e.message}</span>`;
@@ -222,27 +286,28 @@
       }
 
       $("newQuestion").onclick = newQuestion;
+      applyLang();
 
       // ---- ask anything ----
       async function askQuestion() {
         const question = $("askInput").value.trim();
         if (!question) return;
         const body = $("askBody");
-        body.innerHTML = thinking("Retrieving chunks and thinking…");
+        body.innerHTML = thinking(t("retrieving"));
         try {
           const res = await fetch("/api/ask", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ question }),
+            body: JSON.stringify({ question, lang: LANG }),
           });
           const data = await res.json();
-          if (!res.ok) throw new Error(data.error || "request failed");
+          if (!res.ok) throw new Error(data.error || t("requestFailed"));
           body.innerHTML = `<div class="answer">💬 ${data.answer}</div><div class="sources"></div>`;
           const src = body.querySelector(".sources");
           data.sources.forEach((s) => {
             const det = document.createElement("details");
             det.innerHTML = `
-              <summary>[${s.rank}] S${s.season} — “${s.title}” (distance ${s.distance})${s.sent_to_llm ? " → sent" : " · not sent"}</summary>
+              <summary>[${s.rank}] ${t("season")}${s.season} — “${s.title}” (${t("distance")} ${s.distance})${s.sent_to_llm ? " → " + t("sent") : " · " + t("notSent")}</summary>
               <pre>${s.text}</pre>`;
             src.appendChild(det);
           });

@@ -238,13 +238,18 @@ def load_quiz_pool():
     return _quiz_pool
 
 
-def random_quiz_chunk():
+def random_quiz_chunk(lang=None):
     """Samples a random chunk WITH an aligned clip, from quiz_pool.json.
-    No vector DB involved: plain random choice over the pool."""
+    No vector DB involved: plain random choice over the pool.
+    lang ('es' | 'en'): only clips whose audio is in that language."""
     pool = load_quiz_pool()
     if not pool:
         raise RuntimeError("quiz_pool.json is empty")
-    return pool[random.choice(list(pool))]
+    keys = [k for k, v in pool.items()
+            if lang is None or v.get("audio_lang", "es") == lang]
+    if not keys:
+        raise LookupError(f"no clips with {lang} audio in quiz_pool.json")
+    return pool[random.choice(keys)]
     
 
 def retrieve(vector_store, question, season=None, k=TOP_K):
@@ -286,7 +291,7 @@ TRIVIA_SYSTEM = (
 
 TRIVIA_ES_SYSTEM = (
     "Eres un experto en Los Simpson (temporadas clásicas). A partir del "
-    "fragmento de guion que se te da (en castellano), generas una pregunta "
+    "fragmento de guion que se te da (en castellano o en inglés), generas una pregunta "
     "de trivia con respuesta objetiva DENTRO del fragmento: nombres, "
     "objetos, lugares, qué dice un personaje o qué ocurre. Devuelve "
     "EXACTAMENTE este formato, primero en castellano y luego el mismo "
