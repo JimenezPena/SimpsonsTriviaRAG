@@ -71,6 +71,7 @@ SimpsonsTriviaRAG/
 │       ├── collect_urls.py        # List the reels of an Instagram account
 │       ├── export_from_db.py      # Export chunks + stored embeddings from ChromaDB
 │       ├── translate_chunks.py    # Literal EN->ES translation of all chunks (offline)
+│       ├── fetch_synopses.py      # Episode plots from Wikipedia (offline, cached)
 │       ├── media.py               # yt-dlp download and video cache
 │       ├── google_client.py       # Gemini: embeddings, transcription, translation
 │       ├── chunk_match.py         # Clip -> chunk identification
@@ -193,7 +194,10 @@ Clips that are now accepted leave the queue and are linked; the rest are re-queu
 | `data/ingest/chunks/<shortcode>.jsonl` | One record per clip: matched episode/`chunk_id`, `audio_lang`, confidence, runner-up candidates, and its aligned lines (`text_es`, `text_en`, `start`, `end`, `translation_source`) |
 | `data/ingest/ig_links.jsonl` | `chunk_id -> ig_url` registry for the accepted clips |
 | `data/ingest/review_queue.jsonl` | Clips whose match needs a human look |
+| `data/ingest/episode_synopses.json` | Wikipedia plot of every episode (`fetch_synopses`), keyed by `SxxExx`, checked against the titles in `chunks_en.jsonl`; CC BY-SA, `wiki_url` is kept with each entry |
 | `data/quiz_pool.json` | One entry per clip, keyed by shortcode, with `text_es`/`text_en` taken from the clip's own aligned lines (`text_source` says how: `dub`, `audio`, or `chunk-literal` when the clip has no aligned lines and the whole chunk's literal translation is used) |
+
+**Episode synopses.** `PYTHONPATH=src python -m spanish_align.fetch_synopses` downloads the plot of every episode of seasons 1-10 from Wikipedia (`--seasons 5-6` for a subset). It takes season and episode number from each article's infobox, checks the title against the episodes of `chunks_en.jsonl` and remaps or flags what does not match; raw API replies are cached in `data/ingest/cache/wiki/`, so re-runs are free. The summary at the end lists what needs a manual look (two-part episodes that share an article, titles that differ between Wikipedia and the DB).
 
 ---
 

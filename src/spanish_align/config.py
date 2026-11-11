@@ -41,6 +41,8 @@ CHUNKS_EN = WORKDIR / "chunks_en.jsonl"          # export of existing DB chunks
 CHUNKS_ES = WORKDIR / "chunks_es.jsonl"          # translations (by chunk_id)
 REVIEW_QUEUE = WORKDIR / "review_queue.jsonl"
 IG_LINKS = WORKDIR / "ig_links.jsonl"            # chunk_id -> ig_url registry
+SYNOPSES = WORKDIR / "episode_synopses.json"     # Wikipedia plots, by episode_id
+WIKI_CACHE = CACHE_DIR / "wiki"                  # raw Wikipedia API replies
 CHUNK_EMBEDDINGS = CACHE_DIR / "chunk_embeddings.json"
 
 # Thresholds (tune after validating phase F1 with ~20 clips)
