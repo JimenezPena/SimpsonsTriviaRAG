@@ -28,6 +28,7 @@ import http.client
 import json
 import re
 import time
+import unicodedata
 import urllib.parse
 import urllib.request
 
@@ -220,6 +221,25 @@ def _same_title(a: str, b: str) -> bool:
 # Main
 # --------------------------------------------------------------------------
 
+_PUNCT = str.maketrans({
+    "\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"',
+    "\u2013": "-", "\u2014": "-", "\u2026": "...", "\u00a0": " ",
+})
+
+
+def normalize_text(text: str) -> str:
+    """Plain, search-friendly text: Wikipedia writes 'Spin\u0308al Tap' with a
+    dotless i and a combining diaeresis over the n ('Sp\u0131n\u0308al'); that
+    becomes 'Spinal', so it matches what people (and Gemini) write. Curly
+    quotes, dashes and non-breaking spaces become ASCII. Accented vowels
+    (e.g. 'caf\u00e9') are kept. Idempotent."""
+    t = unicodedata.normalize("NFC", text)
+    t = t.replace("\u0131", "i")                                  # dotless i
+    t = re.sub("([^aeiouAEIOU\\s\u0300-\u036f])\u0308", r"\1", t)  # n + diaeresis
+    t = t.translate(_PUNCT)
+    return re.sub(r"[ \t]{2,}", " ", t)
+
+
 def _clean_title(wiki_title: str) -> str:
     """'Itchy & Scratchy Land (The Simpsons episode)' -> 'Itchy & Scratchy Land'."""
     return re.sub(r"\s*\((?:The )?Simpsons[^)]*\)", "", wiki_title).strip()
@@ -233,7 +253,7 @@ def _record(eid, season, episode, art) -> dict:
         "wiki_url": "https://en.wikipedia.org/wiki/"
                     + urllib.parse.quote(art["title"].replace(" ", "_"), safe="_(),!'"),
         "plot_source": art["plot_source"], "words": len(art["plot"].split()),
-        "plot": art["plot"],
+        "plot": normalize_text(art["plot"]),
     }
 
 
@@ -274,7 +294,8 @@ def build(seasons: list[int], refresh: bool = False) -> tuple[dict, list[dict], 
     return records, unresolved, problems
 
 
-def check_against_chunks(records: dict, unresolved: list[dict] = ()) -> list[str]:
+def check_against_chunks(records: dict, unresolved: list[dict] = (),
+                         known: set = frozenset()) -> list[str]:
     """Contrasts the infobox numbers with the DB (chunks_en.jsonl) and warns:
       * the title at that SxxExx in the DB differs from the article's: if the
         same title sits at ONE other number of that season, the record is
@@ -282,7 +303,9 @@ def check_against_chunks(records: dict, unresolved: list[dict] = ()) -> list[str
         Wikipedia one is kept in 'wiki_episode_id'; otherwise it stays as is,
         flagged 'unverified';
       * articles without usable infobox numbers are placed by title.
-    Everything that does not match is listed; nothing is guessed."""
+    Everything that does not match is listed; nothing is guessed.
+    known: episode ids that already have a synopsis from earlier runs (other
+    seasons), so they are not reported as missing."""
     if not CHUNKS_EN.exists():
         return ["chunks_en.jsonl not found: numbers not checked"] + [
             f"'{r['title']}' (season {r['season']}): episode number unknown, "
@@ -344,7 +367,7 @@ def check_against_chunks(records: dict, unresolved: list[dict] = ()) -> list[str
             notes.append(f"WARNING '{rec['title']}' (season {rec['season']}): no usable infobox "
                          f"numbers and {len(cands)} title matches in the DB; skipped")
 
-    missing = sorted(e for e in db if e not in records)
+    missing = sorted(e for e in db if e not in records and e not in known)
     if missing:
         notes.append(f"{len(missing)} episodes of the DB without synopsis: "
                      + ", ".join(f"{e} '{db[e][1]}'" for e in missing[:15])
@@ -363,19 +386,32 @@ def main() -> None:
     p = argparse.ArgumentParser(description="Episode plots from Wikipedia")
     p.add_argument("--seasons", default="1-10", help="e.g. 1-10, 5, 5,6 (default 1-10)")
     p.add_argument("--refresh", action="store_true", help="ignore the local cache")
+    p.add_argument("--fresh", action="store_true",
+                   help="start the output file from scratch (default: the seasons "
+                        "not requested are kept, so runs add up)")
     args = p.parse_args()
 
     ensure_dirs()
-    records, unresolved, problems = build(_parse_seasons(args.seasons), args.refresh)
-    notes = check_against_chunks(records, unresolved)
+    seasons = _parse_seasons(args.seasons)
+    records, unresolved, problems = build(seasons, args.refresh)
 
+    # incremental: only the requested seasons are replaced
+    kept = {}
+    if SYNOPSES.exists() and not args.fresh:
+        kept = {e: r for e, r in json.loads(SYNOPSES.read_text(encoding="utf-8")).items()
+                if r["season"] not in seasons}
+        if kept:
+            print(f"\nKept {len(kept)} episodes of other seasons already in {SYNOPSES.name}")
+    notes = check_against_chunks(records, unresolved, known=set(kept))
+    records = {**kept, **records}
     SYNOPSES.write_text(json.dumps(dict(sorted(records.items())),
                                    ensure_ascii=False, indent=1), encoding="utf-8")
     words = [r["words"] for r in records.values()]
     srcs = {}
     for r in records.values():
         srcs[r["plot_source"]] = srcs.get(r["plot_source"], 0) + 1
-    print(f"\n{len(records)} synopses -> {SYNOPSES}")
+    covered = sorted({r["season"] for r in records.values()})
+    print(f"\n{len(records)} synopses (seasons {covered}) -> {SYNOPSES}")
     if words:
         print(f"words per plot: min {min(words)}, median {sorted(words)[len(words)//2]}, max {max(words)}"
               f" | sections used: {srcs}")

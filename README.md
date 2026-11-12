@@ -72,6 +72,8 @@ SimpsonsTriviaRAG/
 │       ├── export_from_db.py      # Export chunks + stored embeddings from ChromaDB
 │       ├── translate_chunks.py    # Literal EN->ES translation of all chunks (offline)
 │       ├── fetch_synopses.py      # Episode plots from Wikipedia (offline, cached)
+│       ├── embed_synopses.py      # Plot paragraphs + whole-plot embeddings (offline)
+│       ├── eval_synopses.py       # Do the synopses help to identify a clip's episode?
 │       ├── media.py               # yt-dlp download and video cache
 │       ├── google_client.py       # Gemini: embeddings, transcription, translation
 │       ├── chunk_match.py         # Clip -> chunk identification
@@ -198,6 +200,10 @@ Clips that are now accepted leave the queue and are linked; the rest are re-queu
 | `data/quiz_pool.json` | One entry per clip, keyed by shortcode, with `text_es`/`text_en` taken from the clip's own aligned lines (`text_source` says how: `dub`, `audio`, or `chunk-literal` when the clip has no aligned lines and the whole chunk's literal translation is used) |
 
 **Episode synopses.** `PYTHONPATH=src python -m spanish_align.fetch_synopses` downloads the plot of every episode of seasons 1-10 from Wikipedia (`--seasons 5-6` for a subset). It takes season and episode number from each article's infobox, checks the title against the episodes of `chunks_en.jsonl` and remaps or flags what does not match; raw API replies are cached in `data/ingest/cache/wiki/`, so re-runs are free. The summary at the end lists what needs a manual look (two-part episodes that share an article, titles that differ between Wikipedia and the DB).
+
+**Embedding the synopses.** `PYTHONPATH=src python -m spanish_align.embed_synopses` (add `--dry-run` to see the counts without calling the API) turns every plot into one document per paragraph (short ones merged, long ones split at sentence ends) plus one for the whole plot. Text is normalised first (e.g. Wikipedia's `Spın̈al Tap` becomes `Spinal Tap`). Continuity is carried by a header in the embedded text (`The Simpsons, S03E22 "The Otto Show". Plot, part 2 of 4:`) and by metadata that is stored but not embedded (`episode_id`, `part`, `n_parts`, `level`), which lets you fetch neighbouring paragraphs or aggregate scores per episode. Output: `data/ingest/synopsis_docs.jsonl` and `data/ingest/cache/synopsis_embeddings.json`.
+
+**Do they help?** `PYTHONPATH=src python -m spanish_align.eval_synopses [--verbose]` uses your confirmed clips as ground truth and compares, for finding the clip's *episode*, the current chunk-based method with the whole-plot vector, the best paragraph, and two fusions. The confirmed links were themselves found with the chunk method, so the baseline starts with an advantage.
 
 ---
 

@@ -8,7 +8,10 @@ import base64
 import hashlib
 import http.client
 import json
+import os
+import re
 import time
+import urllib.error
 import urllib.request
 
 from .config import (
@@ -21,11 +24,40 @@ from .config import (
 # Low-level helpers
 # --------------------------------------------------------------------------
 
+class QuotaExhausted(RuntimeError):
+    """A DAILY quota is used up: waiting a few minutes will not help."""
+
+
+_RATE_LIMIT_HITS = 0        # 429s that were waited out (the callers pace themselves with it)
+
+
+def _rate_limit_info(e: urllib.error.HTTPError) -> tuple[float | None, bool]:
+    """(seconds the API asks us to wait, is it a per-day quota?) from a 429."""
+    try:
+        body = e.read().decode("utf-8", "replace")
+    except Exception:
+        body = ""
+    delay = None
+    m = re.search(r'"retryDelay"\s*:\s*"([\d.]+)s"', body)
+    if m:
+        delay = float(m.group(1))
+    elif e.headers is not None and e.headers.get("Retry-After", "").replace(".", "").isdigit():
+        delay = float(e.headers["Retry-After"])
+    daily = bool(re.search(r"PerDay|per day|daily", body, re.I))
+    return delay, daily
+
+
 def _post(model: str, method: str, payload: dict,
-          timeout: int = 120, retries: int = 4) -> dict:
-    """POST to the Gemini API with retries: backoff on 429 rate limits
-    and reconnection on transient network errors (RemoteDisconnected,
-    URLError, timeouts) — same pattern as ingest_batch.py."""
+          timeout: int = 120, retries: int = 6) -> dict:
+    """POST to the Gemini API, surviving the usual failures:
+      * 429 rate limit: waits what the API asks for (retryDelay /
+        Retry-After), else a growing backoff; a PER-DAY quota raises
+        QuotaExhausted at once instead of waiting;
+      * 500/502/503/504 and network errors (RemoteDisconnected, URLError,
+        timeouts, resets): retried with a growing pause;
+      * anything else (400, 403...) is raised immediately.
+    The last error is re-raised once the retries run out."""
+    global _RATE_LIMIT_HITS
     url = f"{GEMINI_URL}/{model}:{method}?key={GOOGLE_API_KEY}"
     body = json.dumps(payload).encode("utf-8")
     for attempt in range(1, retries + 1):
@@ -36,8 +68,19 @@ def _post(model: str, method: str, payload: dict,
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return json.loads(r.read())
         except urllib.error.HTTPError as e:
-            if e.code == 429 and attempt < retries:
-                time.sleep(min(60 * attempt, 90))
+            if e.code == 429:
+                delay, daily = _rate_limit_info(e)
+                if daily:
+                    raise QuotaExhausted(
+                        f"Gemini daily quota exhausted ({model}): try again "
+                        "tomorrow or use another API key/plan") from e
+                if attempt >= retries:
+                    raise
+                wait = min((delay + 2) if delay else 20 * attempt, 120)
+                _RATE_LIMIT_HITS += 1
+                print(f"    [warn] HTTP 429 (rate limit): retry "
+                      f"{attempt}/{retries} in {wait:.0f}s")
+                time.sleep(wait)
                 continue
             if e.code in (500, 502, 503, 504) and attempt < retries:
                 wait = 15 * attempt
@@ -47,9 +90,9 @@ def _post(model: str, method: str, payload: dict,
                 continue
             raise
         except (urllib.error.URLError, http.client.HTTPException,
-                ConnectionError, TimeoutError) as e:
+                ConnectionError, TimeoutError, json.JSONDecodeError) as e:
             if attempt < retries:
-                wait = 10 * attempt
+                wait = min(10 * attempt, 60)
                 print(f"    [warn] {type(e).__name__}: "
                       f"retry {attempt}/{retries} in {wait}s")
                 time.sleep(wait)
@@ -67,6 +110,58 @@ def _strip_fences(raw: str) -> str:
 # Embeddings (with disk cache, batched within the API limit)
 # --------------------------------------------------------------------------
 
+EMBED_PAUSE = 1.0           # seconds between batches (longer after a 429)
+
+
+def _load_embedding_cache(cache_file) -> dict[str, list[float]]:
+    if not cache_file.exists():
+        return {}
+    try:
+        return json.loads(cache_file.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        bad = cache_file.with_suffix(".corrupt.json")
+        os.replace(cache_file, bad)
+        print(f"    [warn] {cache_file.name} was unreadable (interrupted write?); "
+              f"moved to {bad.name}, starting a new cache")
+        return {}
+
+
+def _save_embedding_cache(cache_file, cache) -> None:
+    tmp = cache_file.with_suffix(".tmp")
+    tmp.write_text(json.dumps(cache), encoding="utf-8")
+    os.replace(tmp, cache_file)      # atomic: an interruption never leaves half a file
+
+
+def _embed_batch(texts: list[str], task_type: str) -> list[list[float]]:
+    """One batchEmbedContents request; if it keeps failing, the batch is
+    split in two (a too-large or too-slow request often goes through in
+    halves). A single text that fails is raised."""
+    payload = {
+        "requests": [
+            {"model": f"models/{EMBED_MODEL}",
+             "content": {"parts": [{"text": t[:8000]}]},
+             "taskType": task_type}
+            for t in texts
+        ]
+    }
+    try:
+        resp = _post(EMBED_MODEL, "batchEmbedContents", payload, timeout=90)
+        vecs = [e["values"] for e in resp["embeddings"]]
+        if len(vecs) != len(texts):
+            raise ValueError(f"asked for {len(texts)} embeddings, got {len(vecs)}")
+        return vecs
+    except QuotaExhausted:
+        raise
+    except (urllib.error.URLError, http.client.HTTPException, ConnectionError,
+            TimeoutError, ValueError, KeyError) as e:
+        if len(texts) == 1:
+            raise
+        print(f"    [warn] batch of {len(texts)} failed ({type(e).__name__}: {e}); "
+              "splitting it in two")
+        mid = len(texts) // 2
+        return _embed_batch(texts[:mid], task_type) + _embed_batch(texts[mid:], task_type)
+
+
 def embed_texts(texts: list[str],
                 task_type: str = "RETRIEVAL_DOCUMENT") -> list[list[float]]:
     """gemini-embedding-001, batched in chunks of EMBED_BATCH_LIMIT.
@@ -76,36 +171,42 @@ def embed_texts(texts: list[str],
       RETRIEVAL_QUERY     — the clip transcript used as a search query
       SEMANTIC_SIMILARITY — symmetric line-by-line comparison (alignment)
     Cached on disk by (text, task_type) hash: nothing is embedded twice.
+
+    Fault tolerant: each request retries on rate limits, 5xx and network
+    errors (see _post); the cache is saved after EVERY batch, so a failure
+    half-way (or Ctrl-C) loses nothing and the same command resumes where it
+    stopped; a per-day quota raises QuotaExhausted with the progress kept.
     """
     ensure_dirs()
     cache_file = CACHE_DIR / "embeddings.json"
-    cache: dict[str, list[float]] = {}
-    if cache_file.exists():
-        cache = json.loads(cache_file.read_text(encoding="utf-8"))
+    cache = _load_embedding_cache(cache_file)
 
     keys = [_cache_key(t, task_type) for t in texts]
     missing_idx = [i for i, k in enumerate(keys) if k not in cache]
-    for m in range(0, len(missing_idx), EMBED_BATCH_LIMIT):
-        batch_idx = missing_idx[m:m + EMBED_BATCH_LIMIT]
-        payload = {
-            "requests": [
-                {"model": f"models/{EMBED_MODEL}",
-                 "content": {"parts": [{"text": texts[i][:8000]}]},
-                 "taskType": task_type}
-                for i in batch_idx
-            ]
-        }
-        url = f"{GEMINI_URL}/{EMBED_MODEL}:batchEmbedContents?key={GOOGLE_API_KEY}"
-        req = urllib.request.Request(
-            url, data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=60) as r:
-            resp = json.loads(r.read())
-        for i, emb in zip(batch_idx, resp["embeddings"]):
-            cache[keys[i]] = emb["values"]
-    if missing_idx:
-        cache_file.write_text(json.dumps(cache), encoding="utf-8")
+    # identical texts in the same call are embedded once
+    todo, first = [], {}
+    for i in missing_idx:
+        if keys[i] not in first:
+            first[keys[i]] = i
+            todo.append(i)
+    pause = EMBED_PAUSE
+    for n, m in enumerate(range(0, len(todo), EMBED_BATCH_LIMIT)):
+        batch_idx = todo[m:m + EMBED_BATCH_LIMIT]
+        hits_before = _RATE_LIMIT_HITS
+        try:
+            vecs = _embed_batch([texts[i] for i in batch_idx], task_type)
+        except BaseException:
+            raise             # earlier batches are already on disk
+        for i, v in zip(batch_idx, vecs):
+            cache[keys[i]] = v
+        _save_embedding_cache(cache_file, cache)
+        done = min(m + EMBED_BATCH_LIMIT, len(todo))
+        if len(todo) > EMBED_BATCH_LIMIT:
+            print(f"    embedded {done}/{len(todo)}")
+        if _RATE_LIMIT_HITS > hits_before:       # the API pushed back: go slower
+            pause = min(pause * 2 + 5, 60)
+        if done < len(todo):
+            time.sleep(pause)
     return [cache[k] for k in keys]
 
 
