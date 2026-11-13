@@ -10,6 +10,8 @@ what the CLIP says, not the whole chunk:
                           translation would belong to a different line.
   * English-audio clip -> text_en = the audio transcript; text_es = literal
                           translation of the lines it aligned with.
+  * Each entry also carries "visual" (what is SEEN in the clip, from
+    `cli describe`) when the clip has one.
   * No usable aligned lines (e.g. a clip record from an old version) -> the
     whole chunk's literal translation, counted in the summary.
 
@@ -26,7 +28,8 @@ import json
 from collections import Counter
 from pathlib import Path
 
-from .config import CHUNKS_DIR, CHUNKS_EN, CHUNKS_ES, IG_LINKS, ensure_dirs
+from .config import (CHUNKS_DIR, CHUNKS_EN, CHUNKS_ES, IG_LINKS, TRANSCRIPTS_DIR,
+                     ensure_dirs)
 
 QUIZ_POOL = Path("data/quiz_pool.json")
 
@@ -44,6 +47,15 @@ def _clip_record(shortcode):
         return None
     first = p.read_text(encoding="utf-8").splitlines()[:1]
     return json.loads(first[0]) if first else None
+
+
+def _visual(shortcode):
+    """The clip's visual description (cli describe), or None."""
+    p = TRANSCRIPTS_DIR / f"{shortcode}.json"
+    if not p.exists():
+        return None
+    data = json.loads(p.read_text(encoding="utf-8"))
+    return (data.get("visual") or None) if isinstance(data, dict) else None
 
 
 def _join(rows):
@@ -116,6 +128,9 @@ def main() -> None:
             "text_en": clip_en or _chunk_en(c_en),
             "text_source": source,
         }
+        visual = _visual(shortcode)
+        if visual:
+            pool[shortcode]["visual"] = visual
         sources[source] += 1
 
     QUIZ_POOL.write_text(json.dumps(pool, ensure_ascii=False, indent=1),
@@ -126,6 +141,9 @@ def main() -> None:
         print(f"  {sources['chunk-literal']} entries use the whole chunk's literal "
               "translation (no aligned lines): reprocess those clips with "
               "'cli ingest --redo'.")
+    n_vis = sum(1 for e in pool.values() if e.get("visual"))
+    print(f"  {n_vis} of {len(pool)} clips have a visual description"
+          + ("" if n_vis == len(pool) else " (cli describe adds the rest)"))
     if stale:
         print(f"  skipped {stale} stale ig_links entries (clip re-matched to another chunk).")
     if no_translation:

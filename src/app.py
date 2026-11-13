@@ -183,10 +183,7 @@ def api_trivia():
             entry = tg.random_quiz_chunk(lang)
         except LookupError as e:
             return jsonify({"error": str(e), "code": "no_clips"}), 404
-        text = entry["text_en"] if lang == "en" else entry["text_es"]
-        prompt = (f"Fragmento de guion (temporada {entry['season']}, episodio "
-                  f"\"{entry['title']}\"):\n\n{text}\n\n"
-                  f"Genera la pregunta de trivia (castellano + inglés).")
+        prompt = tg.clip_prompt(entry, lang)
         try:
             out = tg.ask_llm(prompt, system=tg.TRIVIA_ES_SYSTEM)
         except RuntimeError as e:
@@ -283,6 +280,15 @@ def api_ask():
         f"{doc.page_content}"
         for doc, score in sent
     )
+    try:        # best plot-summary paragraph (Wikipedia), if the DB has them
+        syn = tg.retrieve_synopsis(get_store(), question, season, k=1)
+    except Exception as e:
+        syn = []
+        print(f"[ask] synopsis lookup failed: {e}", flush=True)
+    if syn:
+        m = syn[0][0].metadata
+        context += (f"\n\n---\n\n[Plot summary, season {m.get('season')}, "
+                    f"\"{m.get('episode_title')}\"]\n{syn[0][0].page_content}")
     reply_in = "Spanish (castellano)" if lang == "es" else "English"
     prompt = (f"Context:\n\n{context}\n\nQuestion: {question}\n\n"
               f"Write the answer in {reply_in}.")

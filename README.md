@@ -74,6 +74,7 @@ SimpsonsTriviaRAG/
 │       ├── fetch_synopses.py      # Episode plots from Wikipedia (offline, cached)
 │       ├── embed_synopses.py      # Plot paragraphs + whole-plot embeddings (offline)
 │       ├── eval_synopses.py       # Do the synopses help to identify a clip's episode?
+│       ├── add_synopses_to_db.py  # Add the plot paragraphs to the web app's vector DB (offline)
 │       ├── media.py               # yt-dlp download and video cache
 │       ├── google_client.py       # Gemini: embeddings, transcription, translation
 │       ├── chunk_match.py         # Clip -> chunk identification
@@ -235,6 +236,18 @@ The repository includes a Render Blueprint (`render.yaml`):
 4. The service starts with `gunicorn --workers 1 --threads 4 --timeout 120 src.app:app`. A **single worker** is required because the pending quiz answers are kept in memory.
 
 To publish a new vector DB, upload a new `db.tar.gz` to the `latest-db` release (it must extract to a `batch_vector_db/` folder) and redeploy. `data/quiz_pool.json` is committed, so new clips reach the site by committing the regenerated file.
+
+**Adding the episode plots to the DB.** The Wikipedia plot paragraphs (see *Episode synopses*) can live in the same Chroma collection as the script chunks, so free-form questions can also use a summary of the episode. No API calls: the vectors are the ones `embed_synopses` already computed.
+
+```bash
+PYTHONPATH=src python -m spanish_align.add_synopses_to_db            # idempotent; --dry-run to preview
+tar -czf db.tar.gz batch_vector_db
+gh release upload latest-db db.tar.gz --clobber --repo JimenezPena/SimpsonsTriviaRAG   # or upload it in the release page
+```
+
+Then redeploy on Render. The paragraphs carry `kind="synopsis"`: the quiz and the chunk retrieval ignore them, and `/api/ask` adds the best-matching paragraph to the context (as a `[Plot summary ...]` block, not listed among the sources). Re-run the command after fetching more seasons. The plot text is from Wikipedia (CC BY-SA 4.0); `wiki_url` is stored with every paragraph. Test it on a copy of `batch_vector_db` first if you want to be careful: the command only deletes documents marked `kind="synopsis"`.
+
+**Visual descriptions in the clip quiz.** `export_quiz_pool` copies each clip's `visual` description (from `cli describe`) into `data/quiz_pool.json`, and the clip-mode prompt gives it to the LLM next to the dialogue, so questions can be about visual gags. Regenerate and commit `quiz_pool.json` after describing clips.
 
 ---
 

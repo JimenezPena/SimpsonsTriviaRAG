@@ -167,11 +167,16 @@ def _ro_connect():
     return sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=10)
 
 
+_NOT_SYNOPSIS = ("NOT EXISTS (SELECT 1 FROM embedding_metadata k WHERE k.id = e.id "
+                 "AND k.key = 'kind' AND k.string_value = 'synopsis')")
+
+
 def db_count():
-    """Number of chunks stored (same figure as collection.count())."""
+    """Number of SCRIPT chunks stored (plot summaries are not counted)."""
     con = _ro_connect()
     try:
-        return con.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
+        return con.execute(
+            f"SELECT COUNT(*) FROM embeddings e WHERE {_NOT_SYNOPSIS}").fetchone()[0]
     finally:
         con.close()
 
@@ -188,15 +193,17 @@ def random_chunk(vector_store=None, season=None):
         if season:
             row = con.execute(
                 "SELECT e.id FROM embeddings e JOIN embedding_metadata m "
-                "ON m.id = e.id AND m.key = 'season' AND m.int_value = ? "
-                "ORDER BY RANDOM() LIMIT 1", (int(season),)).fetchone()
+                f"ON m.id = e.id AND m.key = 'season' AND m.int_value = ? "
+                f"WHERE {_NOT_SYNOPSIS} ORDER BY RANDOM() LIMIT 1",
+                (int(season),)).fetchone()
         else:
             row = None
         if row is None:
             # no season requested, or none stored for it (the DB may hold fewer
             # seasons than MAX_SEASON): fall back to any chunk, as before
             row = con.execute(
-                "SELECT id FROM embeddings ORDER BY RANDOM() LIMIT 1").fetchone()
+                f"SELECT e.id FROM embeddings e WHERE {_NOT_SYNOPSIS} "
+                "ORDER BY RANDOM() LIMIT 1").fetchone()
         if row is None:
             raise RuntimeError("The collection is empty.")
         doc, meta = None, {}
@@ -252,13 +259,38 @@ def random_quiz_chunk(lang=None):
     return pool[random.choice(keys)]
     
 
+SYNOPSIS_KIND = "synopsis"     # metadata "kind" of the plot documents (add_synopses_to_db)
+
+
+def clip_prompt(entry, lang=None):
+    """Prompt of the clips-mode trivia: the fragment the clip says, plus its
+    visual description when the pool entry has one."""
+    text = entry["text_en"] if lang == "en" else entry["text_es"]
+    prompt = (f"Fragmento de guion (temporada {entry['season']}, episodio "
+              f"\"{entry['title']}\"):\n\n{text}\n\n")
+    if entry.get("visual"):
+        prompt += f"Descripción visual del clip (en inglés):\n{entry['visual']}\n\n"
+    return prompt + "Genera la pregunta de trivia (castellano + inglés)."
+
+
+def _where(season, *conds):
+    conds = list(conds) + ([{"season": {"$eq": season}}] if season is not None else [])
+    return None if not conds else conds[0] if len(conds) == 1 else {"$and": conds}
+
+
 def retrieve(vector_store, question, season=None, k=TOP_K):
-    """Free-form Q&A: retrieves the k chunks most similar to the question."""
+    """Free-form Q&A: retrieves the k SCRIPT chunks most similar to the question
+    (the plot summaries stored in the same collection are excluded)."""
     # langchain-chroma uses `filter` in its public API (with Chroma's where
     # syntax); passing `where` causes weird errors depending on the version
-    kwargs = {"k": k}
-    if season is not None:
-        kwargs["filter"] = {"season": {"$eq": season}}
+    kwargs = {"k": k, "filter": _where(season, {"kind": {"$ne": SYNOPSIS_KIND}})}
+    return vector_store.similarity_search_with_score(question, **kwargs)
+
+
+def retrieve_synopsis(vector_store, question, season=None, k=1):
+    """The k plot-summary paragraphs most similar to the question ([] if the
+    DB has none, e.g. add_synopses_to_db has not been run)."""
+    kwargs = {"k": k, "filter": _where(season, {"kind": {"$eq": SYNOPSIS_KIND}})}
     return vector_store.similarity_search_with_score(question, **kwargs)
 
 
@@ -293,7 +325,14 @@ TRIVIA_ES_SYSTEM = (
     "Eres un experto en Los Simpson (temporadas clásicas). A partir del "
     "fragmento de guion que se te da (en castellano o en inglés), generas una pregunta "
     "de trivia con respuesta objetiva DENTRO del fragmento: nombres, "
-    "objetos, lugares, qué dice un personaje o qué ocurre. Devuelve "
+    "objetos, lugares, qué dice un personaje o qué ocurre. Puede venir también "
+    "una DESCRIPCIÓN VISUAL del clip (en inglés), que cuenta lo que se ve: úsala "
+    "para preguntar por gags visuales, acciones o lugares cuando eso dé una "
+    "pregunta mejor que el diálogo, y para entender el contexto de lo que se dice. "
+    "La descripción se ha generado automáticamente y puede equivocarse: pregunta "
+    "solo por lo que sea claro en ella o esté confirmado por el diálogo, y no "
+    "inventes nada que no aparezca ni en el fragmento ni en la descripción. "
+    "Devuelve "
     "EXACTAMENTE este formato, primero en castellano y luego el mismo "
     "contenido en inglés (las opciones A-D deben ser las MISMAS y en el "
     "MISMO orden en ambos idiomas):\n"
@@ -351,8 +390,9 @@ def play_trivia(vector_store, season=None, verbose=False):
 
 
 ANSWER_SYSTEM = (
-    "Answer questions about The Simpsons using ONLY the script context "
-    "provided. Be brief and direct (max 4 sentences).\n"
+    "Answer questions about The Simpsons using ONLY the context provided: "
+    "script fragments and, sometimes, a plot summary of an episode. Be brief "
+    "and direct (max 4 sentences).\n"
     "If the context does not contain the answer, say so clearly instead of "
     "making it up. Finish by citing the episode the information comes from."
 )
