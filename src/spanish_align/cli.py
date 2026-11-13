@@ -8,6 +8,7 @@ Run from the project root with PYTHONPATH=src:
     PYTHONPATH=src python -m spanish_align.cli reprocess-review  # re-match the queued clips (after adding seasons)
     PYTHONPATH=src python -m spanish_align.cli review    # interactive review of doubtful clips
     PYTHONPATH=src python -m spanish_align.cli review --scope S05  # ([f] sets it per clip)
+    PYTHONPATH=src python -m spanish_align.cli describe --limit 20   # visual description of transcribed clips
     PYTHONPATH=src python -m spanish_align.cli cleanup   # delete local videos
 
 Startup order (no embedding is ever recalculated; chunk embeddings are
@@ -473,6 +474,69 @@ def cmd_reprocess_review(args) -> None:
     reprocess_review(scope=args.scope, force=args.force)
 
 
+def _clip_urls() -> dict[str, tuple[str, float | None]]:
+    """shortcode -> (url, link score) from the links, the review queue and
+    the clip records; used to find the video of an already transcribed clip."""
+    out: dict[str, tuple[str, float | None]] = {}
+    for rec in _read_jsonl(IG_LINKS):
+        if rec.get("shortcode"):
+            out[rec["shortcode"]] = (rec["ig_url"], rec.get("score"))
+    for item in _read_jsonl(REVIEW_QUEUE):
+        sc = item.get("shortcode") or shortcode_from_url(item["ig_url"])
+        out.setdefault(sc, (item["ig_url"], item.get("score")))
+    return out
+
+
+def describe(limit: int | None = None, redo: bool = False,
+             keep_video: bool = False) -> None:
+    """Adds a visual description ("visual") to the transcript of every clip
+    that lacks it: downloads the video again, one Gemini call per clip, then
+    deletes the video. Lowest-confidence clips first (they are the ones the
+    description is for); --limit spreads the work over several days;
+    resumable (described clips are skipped)."""
+    from .media import download_clip
+    from .google_client import describe_video, QuotaExhausted
+
+    urls = _clip_urls()
+    todo = []
+    for path in sorted(TRANSCRIPTS_DIR.glob("*.json")):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or "segments" not in data:
+            continue                      # old bare-list cache
+        if data.get("visual") and not redo:
+            continue
+        sc = path.stem
+        url, score = urls.get(sc, (f"https://www.instagram.com/reel/{sc}/", None))
+        todo.append((score if score is not None else 2.0, sc, url))
+    todo.sort()
+    total = len(todo)
+    if limit:
+        todo = todo[:limit]
+    print(f"{total} clips without description; processing {len(todo)}")
+    done = failed = 0
+    for n, (_, sc, url) in enumerate(todo, 1):
+        print(f"[{n}/{len(todo)}] {sc} ", end="", flush=True)
+        try:
+            video = download_clip(url)
+            text = describe_video(video, force=redo)
+            print("->", text[:90].replace("\n", " ") + ("..." if len(text) > 90 else ""))
+            done += 1
+        except QuotaExhausted as e:
+            print(f"\nStopped: {e}\nProgress is saved; run the same command to resume.")
+            break
+        except Exception as e:             # a dead URL / blocked reply must not stop the batch
+            print(f"[ERR] {e}")
+            failed += 1
+        finally:
+            if not keep_video:
+                delete_clip(url)
+    print(f"\nDescribed {done} | failed {failed} | still pending {total - done}")
+
+
+def cmd_describe(args) -> None:
+    describe(limit=args.limit, redo=args.redo, keep_video=args.keep_video)
+
+
 def cmd_cleanup(_args) -> None:
     stats = media_stats()
     print(f"Video cache: {stats['count']} files, {stats['total_mb']} MB")
@@ -510,6 +574,14 @@ def main() -> None:
     s.add_argument("--force", action="store_true",
                    help="continue even if embeddings/translations are incomplete")
     s.set_defaults(func=cmd_reprocess_review)
+
+    s = sub.add_parser("describe",
+                       help="add a visual description to the transcribed clips "
+                            "that lack it (1 Gemini call per clip)")
+    s.add_argument("--limit", type=int, help="max clips this run (daily quota)")
+    s.add_argument("--redo", action="store_true", help="describe again the ones that have it")
+    s.add_argument("--keep-video", action="store_true")
+    s.set_defaults(func=cmd_describe)
 
     s = sub.add_parser("cleanup", help="delete local videos")
     s.set_defaults(func=cmd_cleanup)

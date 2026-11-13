@@ -210,6 +210,14 @@ def _norm(title: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", t.replace("&", "and"))
 
 
+_PART_RE = re.compile(r"\(?\bpart\s+(?:one|two|three|1|2|3|i{1,3})\)?\s", re.I)
+
+
+def _base_title(title: str) -> str:
+    """Title without a '(Part Two)' suffix, normalised."""
+    return _norm(_PART_RE.sub(" ", title + " "))
+
+
 def _same_title(a: str, b: str) -> bool:
     na, nb = _norm(a), _norm(b)
     if not na or not nb:
@@ -295,7 +303,7 @@ def build(seasons: list[int], refresh: bool = False) -> tuple[dict, list[dict], 
 
 
 def check_against_chunks(records: dict, unresolved: list[dict] = (),
-                         known: set = frozenset()) -> list[str]:
+                         known=frozenset()) -> list[str]:
     """Contrasts the infobox numbers with the DB (chunks_en.jsonl) and warns:
       * the title at that SxxExx in the DB differs from the article's: if the
         same title sits at ONE other number of that season, the record is
@@ -367,6 +375,27 @@ def check_against_chunks(records: dict, unresolved: list[dict] = (),
             notes.append(f"WARNING '{rec['title']}' (season {rec['season']}): no usable infobox "
                          f"numbers and {len(cands)} title matches in the DB; skipped")
 
+    # 3) two-part episodes: Wikipedia has ONE article for both parts (it may
+    #    even be in another season: Who Shot Mr. Burns? is S06E25 + S07E01).
+    #    A DB episode without synopsis whose title, minus "(Part Two)", equals
+    #    the title of a stored article gets a copy of that plot.
+    pool = {**(known if isinstance(known, dict) else {}), **records}
+    by_base = {}
+    for eid, rec in pool.items():
+        by_base.setdefault(_base_title(rec["title"]), []).append(eid)
+    for eid, (season, title) in sorted(db.items()):
+        if eid in records or eid in known:
+            continue
+        src = by_base.get(_base_title(title), [])
+        if len(src) == 1 and src[0] != eid and _PART_RE.search(title + " "):
+            rec = {**pool[src[0]], "episode_id": eid, "season": season,
+                   "episode": int(eid.split("E")[1]), "title": title,
+                   "shared_article": pool[src[0]]["title"], "shared_with": src[0]}
+            rec.pop("wiki_episode_id", None)
+            records[eid] = rec
+            notes.append(f"{eid} '{title}': no article of its own, plot shared with "
+                         f"{src[0]} (two-part episode)")
+
     missing = sorted(e for e in db if e not in records and e not in known)
     if missing:
         notes.append(f"{len(missing)} episodes of the DB without synopsis: "
@@ -402,14 +431,14 @@ def main() -> None:
                 if r["season"] not in seasons}
         if kept:
             print(f"\nKept {len(kept)} episodes of other seasons already in {SYNOPSES.name}")
-    notes = check_against_chunks(records, unresolved, known=set(kept))
+    notes = check_against_chunks(records, unresolved, known=kept)
     records = {**kept, **records}
     SYNOPSES.write_text(json.dumps(dict(sorted(records.items())),
                                    ensure_ascii=False, indent=1), encoding="utf-8")
-    words = [r["words"] for r in records.values()]
+    words = [r["words"] for r in records.values() if "words" in r]
     srcs = {}
     for r in records.values():
-        srcs[r["plot_source"]] = srcs.get(r["plot_source"], 0) + 1
+        k = r.get("plot_source", "?"); srcs[k] = srcs.get(k, 0) + 1
     covered = sorted({r["season"] for r in records.values()})
     print(f"\n{len(records)} synopses (seasons {covered}) -> {SYNOPSES}")
     if words:

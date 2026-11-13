@@ -11,6 +11,15 @@ query and the episodes are ranked by:
   fusion          baseline + syn_para_max (reciprocal-rank fusion)
   fusion3         baseline + syn_para_max + syn_episode
 
+and, for the clips that have a visual description (cli describe):
+
+  desc_para       description alone vs the plot paragraphs (best paragraph)
+  desc_dia_para   dialogue + description vs the plot paragraphs
+  fusion_desc     baseline (counted twice) + desc_dia_para: the baseline
+                  keeps the lead, the description only breaks its doubts
+
+The 'n' column is how many clips each variant was computed on.
+
 Reported: how often the true episode is 1st / in the top 3 / top 5, and its
 mean rank, for all the clips and split by the confidence with which each clip
 was linked:
@@ -34,7 +43,7 @@ wrong or left in the review queue.
 
 import argparse
 import json
-from collections import defaultdict
+from collections import defaultdict, namedtuple
 
 import numpy as np
 
@@ -43,6 +52,9 @@ from .config import (CHUNK_EMBEDDINGS, CHUNKS_EN, IG_LINKS, MATCH_AUTO_ACCEPT,
 from .embed_synopses import load_docs, load_embeddings
 
 RRF_K = 10
+
+# indices 0-4 keep the old tuple layout
+Clip = namedtuple("Clip", "shortcode episode segments score group visual")
 
 
 def _unit(vectors) -> np.ndarray:
@@ -75,10 +87,11 @@ def rrf(rankings: list[list[str]], k: int = RRF_K) -> list[str]:
     return sorted(fused, key=fused.get, reverse=True)
 
 
-def _segments(path) -> list[dict] | None:
+def _segments(path) -> tuple[list[dict] | None, str | None]:
     data = json.loads(path.read_text(encoding="utf-8"))
-    segs = data["segments"] if isinstance(data, dict) else data
-    return segs or None
+    if isinstance(data, dict):
+        return data.get("segments") or None, (data.get("visual") or None)
+    return data or None, None
 
 
 def _group(score, shortcode: str, approved: set[str]) -> str:
@@ -90,9 +103,10 @@ def _group(score, shortcode: str, approved: set[str]) -> str:
     return "auto" if score >= MATCH_AUTO_ACCEPT else "review"
 
 
-def load_truth() -> list[tuple[str, str, list[dict], float | None, str]]:
-    """[(shortcode, true episode_id, segments, match score, group)] for linked
-    clips with a transcript; group is 'auto', 'review' or 'unknown'."""
+def load_truth() -> list[Clip]:
+    """[Clip(shortcode, true episode_id, segments, match score, group, visual)]
+    for linked clips with a transcript; group is 'auto', 'review' or
+    'unknown'; visual is the description or None."""
     approved = set()
     if REVIEW_QUEUE.exists():
         for line in REVIEW_QUEUE.read_text(encoding="utf-8").splitlines():
@@ -109,19 +123,28 @@ def load_truth() -> list[tuple[str, str, list[dict], float | None, str]]:
         path = TRANSCRIPTS_DIR / f"{sc}.json"
         if link.get("status") != "linked" or sc in seen or not path.exists():
             continue
-        segs = _segments(path)
+        segs, visual = _segments(path)
         if segs:
             seen.add(sc)
             score = link.get("score")
-            out.append((sc, link["episode_id"], segs, score, _group(score, sc, approved)))
+            out.append(Clip(sc, link["episode_id"], segs, score,
+                            _group(score, sc, approved), visual))
     return out
 
 
+VARIANTS = ["baseline", "syn_episode", "syn_para_max", "syn_para_top2", "fusion",
+            "fusion3", "desc_para", "desc_dia_para", "fusion_desc"]
+
+
 def evaluate(truth, queries: np.ndarray, chunk_vecs: np.ndarray, chunk_eps: list[str],
-             docs: list[dict], doc_vecs: np.ndarray) -> dict:
+             docs: list[dict], doc_vecs: np.ndarray,
+             desc_queries: dict | None = None, desc_dia_queries: dict | None = None) -> dict:
     """Returns {variant: [rank of the true episode for each clip]} (1 = best)
     and the per-clip rankings, over the episodes that have both chunks and a
-    synopsis."""
+    synopsis. desc_queries / desc_dia_queries: {shortcode: unit vector} of the
+    description alone / dialogue + description (clips without one are absent
+    and get no rank in the description variants)."""
+    desc_queries, desc_dia_queries = desc_queries or {}, desc_dia_queries or {}
     universe = set(chunk_eps) & {d["episode_id"] for d in docs}
     par = [i for i, d in enumerate(docs) if d["level"] == "paragraph" and d["episode_id"] in universe]
     epi = [i for i, d in enumerate(docs) if d["level"] == "episode" and d["episode_id"] in universe]
@@ -132,7 +155,8 @@ def evaluate(truth, queries: np.ndarray, chunk_vecs: np.ndarray, chunk_eps: list
 
     ranks: dict[str, list] = defaultdict(list)
     per_clip, skipped = [], []
-    for (sc, true, _, score, group), q in zip(truth, queries):
+    for clip, q in zip(truth, queries):
+        sc, true, score, group = clip.shortcode, clip.episode, clip.score, clip.group
         if true not in universe:
             skipped.append((sc, true))
             continue
@@ -144,9 +168,14 @@ def evaluate(truth, queries: np.ndarray, chunk_vecs: np.ndarray, chunk_eps: list
         }
         r["fusion"] = rrf([r["baseline"], r["syn_para_max"]])
         r["fusion3"] = rrf([r["baseline"], r["syn_para_max"], r["syn_episode"]])
-        for name, order in r.items():
-            ranks[name].append(order.index(true) + 1)
-        per_clip.append((sc, true, {n: o.index(true) + 1 for n, o in r.items()}, score, group))
+        if sc in desc_queries:
+            r["desc_para"] = ranking(episode_scores(desc_queries[sc], par_v, par_e, "max"))
+            r["desc_dia_para"] = ranking(episode_scores(desc_dia_queries[sc], par_v, par_e, "max"))
+            r["fusion_desc"] = rrf([r["baseline"], r["baseline"], r["desc_dia_para"]])
+        pos = {n: o.index(true) + 1 for n, o in r.items()}
+        for name in VARIANTS:
+            ranks[name].append(pos.get(name))
+        per_clip.append((sc, true, pos, score, group))
     return {"ranks": dict(ranks), "per_clip": per_clip, "skipped": skipped,
             "universe": len(universe)}
 
@@ -165,8 +194,18 @@ def main() -> None:
         raise SystemExit("no linked clip with a cached transcript to evaluate")
 
     from .google_client import embed_texts      # late: the maths above needs no API
-    queries = _unit(embed_texts([" ".join(s["text"] for s in segs) for _, _, segs, _, _ in truth],
+    dialogues = [" ".join(s["text"] for s in c.segments) for c in truth]
+    queries = _unit(embed_texts(dialogues, task_type="RETRIEVAL_QUERY"))
+    described = [(c.shortcode, d, c.visual) for c, d in zip(truth, dialogues) if c.visual]
+    desc_q = desc_dia_q = {}
+    if described:
+        dv = _unit(embed_texts([v for _, _, v in described], task_type="RETRIEVAL_QUERY"))
+        ddv = _unit(embed_texts([f"{d}\n{v}" for _, d, v in described],
                                 task_type="RETRIEVAL_QUERY"))
+        desc_q = {sc: x for (sc, _, _), x in zip(described, dv)}
+        desc_dia_q = {sc: x for (sc, _, _), x in zip(described, ddv)}
+    print(f"{len(described)} of {len(truth)} clips have a visual description"
+          + ("" if described else " (run: cli describe)"))
     ep_of = {}
     for line in CHUNKS_EN.read_text(encoding="utf-8").splitlines():
         if line.strip():
@@ -191,7 +230,7 @@ def main() -> None:
     print(f"synopses cover seasons {seasons(d['episode_id'] for d in docs)} | chunks "
           f"cover {seasons(chunk_eps)} | clips are from {seasons(t[1] for t in truth)}")
 
-    res = evaluate(truth, queries, chunk_vecs, chunk_eps, docs, doc_vecs)
+    res = evaluate(truth, queries, chunk_vecs, chunk_eps, docs, doc_vecs, desc_q, desc_dia_q)
     n = len(res["per_clip"])
     if n == 0:
         miss = sorted({e for _, e in res["skipped"]})
@@ -203,7 +242,7 @@ def main() -> None:
             "clips' seasons.")
     print(f"{n} clips evaluated (of {len(truth)} with transcript) over "
           f"{res['universe']} episodes\n")
-    names = list(res["ranks"])
+    names = [v for v in VARIANTS if any(x is not None for x in res["ranks"][v])]
     _table("ALL CLIPS", [rk for _, _, rk, _, _ in res["per_clip"]], names)
     labels = {"auto": f"AUTO-ACCEPTED (score >= {MATCH_AUTO_ACCEPT})",
               "review": f"TO REVIEW / REVIEWED (score < {MATCH_AUTO_ACCEPT} or approved in review)",
@@ -222,7 +261,7 @@ def main() -> None:
                                t[3] if t[3] is not None else 0)):
             sc_txt = f"{score:.2f}" if score is not None else "  -"
             print(f"{sc:<14} {true:<8} {sc_txt:>6} {group:<7} "
-                  + " ".join(f"{rk[x]:>12}" for x in names))
+                  + " ".join(f"{rk.get(x, '-'):>12}" for x in names))
 
 
 def _table(title: str, per_clip_ranks: list[dict], names: list[str]) -> None:
@@ -230,10 +269,13 @@ def _table(title: str, per_clip_ranks: list[dict], names: list[str]) -> None:
     if not per_clip_ranks:
         print("  (none)\n")
         return
-    print(f"{'variant':<15} {'top1':>6} {'top3':>6} {'top5':>6} {'mean rank':>10}")
+    print(f"{'variant':<15} {'n':>4} {'top1':>6} {'top3':>6} {'top5':>6} {'mean rank':>10}")
     for name in names:
-        a = np.asarray([rk[name] for rk in per_clip_ranks])
-        print(f"{name:<15} {np.mean(a == 1):>6.0%} {np.mean(a <= 3):>6.0%} "
+        vals = [rk[name] for rk in per_clip_ranks if name in rk]
+        if not vals:
+            continue
+        a = np.asarray(vals)
+        print(f"{name:<15} {len(a):>4} {np.mean(a == 1):>6.0%} {np.mean(a <= 3):>6.0%} "
               f"{np.mean(a <= 5):>6.0%} {a.mean():>10.1f}")
     print()
 

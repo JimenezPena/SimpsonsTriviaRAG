@@ -218,8 +218,53 @@ def _cache_key(text: str, task_type: str) -> str:
 # Audio transcription (video -> segments with timestamps)
 # --------------------------------------------------------------------------
 
+VISUAL_INSTRUCTIONS = (
+    'For "visual": describe in English, in 2-4 sentences of plain narration in '
+    "the present tense (like a plot summary), WHAT HAPPENS in the clip: which "
+    "characters appear (use their names), where they are, what they do, and any "
+    "visual gag. Do not transcribe the dialogue and do not describe the art style."
+)
+
+
+def describe_video(video, force: bool = False) -> str:
+    """Visual description of a clip (English, 2-4 sentences), stored in the
+    clip's transcript cache under "visual" (the cache must already exist:
+    the clip was transcribed). Cached: a described clip costs nothing, unless
+    force=True (the old description is kept if the new call fails)."""
+    ensure_dirs()
+    cache = TRANSCRIPTS_DIR / f"{video.stem}.json"
+    data = json.loads(cache.read_text(encoding="utf-8")) if cache.exists() else None
+    if not isinstance(data, dict):
+        raise ValueError(f"{video.stem}: no transcript cache to attach the description to")
+    if data.get("visual") and not force:
+        return data["visual"]
+    with open(video, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode("utf-8")
+    prompt = ("This is a short clip from The Simpsons. " + VISUAL_INSTRUCTIONS
+              + " Reply with the description only, as plain text.")
+    resp = _post(GEMINI_MODEL, "generateContent", {
+        "contents": [{"parts": [
+            {"text": prompt},
+            {"inline_data": {"mimeType": "video/mp4", "data": b64}},
+        ]}],
+        "generationConfig": {"temperature": 0.0},
+    })
+    try:
+        text = resp["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except (KeyError, IndexError):
+        raise ValueError(f"{video.stem}: the reply has no text (blocked?)")
+    if not text:
+        raise ValueError(f"{video.stem}: empty description")
+    data["visual"] = text
+    tmp = cache.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, cache)
+    return text
+
+
 def transcribe(video) -> dict:
-    """Returns {"lang": "es"|"en", "segments": [{start, end, text}]}.
+    """Returns {"lang": "es"|"en", "segments": [{start, end, text}],
+    "visual": "<what happens in the clip>"} (visual may be missing).
     Cached; old list-format caches are ignored and re-transcribed."""
     ensure_dirs()
     cache = TRANSCRIPTS_DIR / f"{video.stem}.json"
@@ -237,9 +282,11 @@ def transcribe(video) -> dict:
         "detect the spoken language: 'es' for the Spanish dub, 'en' for the "
         "original English audio. Reply ONLY with a JSON object, no markdown:\n"
         '{"lang": "<es|en>", "segments": [{"start": <seconds float>, '
-        '"end": <seconds float>, "text": "<line>"}]}\n'
+        '"end": <seconds float>, "text": "<line>"}], '
+        '"visual": "<what is seen, see below>"}\n'
         "One element per dialogue line. Ignore music, sound effects and "
-        "canned laughter. Use the audio timeline for start/end."
+        "canned laughter. Use the audio timeline for start/end.\n"
+        + VISUAL_INSTRUCTIONS
     )
     payload = {
         "contents": [{"parts": [

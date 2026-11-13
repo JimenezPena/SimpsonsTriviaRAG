@@ -15,7 +15,7 @@ DATA_EPISODES_PATH = "data/simpsons_episodes.csv"
 DB_PATH = "batch_vector_db"
 CHECKPOINT_PATH = os.path.join(DB_PATH, "ingested_episodes.json")
 
-MAX_SEASON = 10         # Discard any line from a season > 10
+MAX_SEASON = 11         # Discard any line from a season > 10
 CHUNK_SIZE = 20          # Dialogue lines per chunk
 CHUNK_OVERLAP = 5        # Overlap between consecutive chunks (within a scene)
 SCENE_CONTEXT_LINES = 3  # Last lines of the previous scene prepended to the
