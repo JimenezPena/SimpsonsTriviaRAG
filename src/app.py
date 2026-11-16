@@ -119,6 +119,7 @@ def parse_trivia_bilingual(out):
 def chunk_info(doc, score):
     m = doc.metadata
     return {
+        "kind": "script",
         "season": m.get("season"),
         "title": m.get("episode_title"),
         "line_start": m.get("line_start"),
@@ -280,15 +281,15 @@ def api_ask():
         f"{doc.page_content}"
         for doc, score in sent
     )
-    try:        # best plot-summary paragraph (Wikipedia), if the DB has them
-        syn = tg.retrieve_synopsis(get_store(), question, season, k=1)
+    try:        # Wikipedia plot, only for questions about an episode as a whole
+        plot = tg.plot_for_question(get_store(), question, season, results[0][1])
     except Exception as e:
-        syn = []
-        print(f"[ask] synopsis lookup failed: {e}", flush=True)
-    if syn:
-        m = syn[0][0].metadata
-        context += (f"\n\n---\n\n[Plot summary, season {m.get('season')}, "
-                    f"\"{m.get('episode_title')}\"]\n{syn[0][0].page_content}")
+        plot = None
+        print(f"[ask] plot lookup failed: {e}", flush=True)
+    if plot:
+        context = (f"[Plot summary (Wikipedia), season {plot['season']}, "
+                   f"\"{plot['title']}\"]\n" + "\n\n".join(plot["paragraphs"])
+                   + "\n\n---\n\n" + context)
     reply_in = "Spanish (castellano)" if lang == "es" else "English"
     prompt = (f"Context:\n\n{context}\n\nQuestion: {question}\n\n"
               f"Write the answer in {reply_in}.")
@@ -303,6 +304,9 @@ def api_ask():
         info["rank"] = i
         info["sent_to_llm"] = i <= tg.TOP_K
         sources.append(info)
+    if plot:       # shown first and labelled: it is the Wikipedia plot, not the script
+        sources.insert(0, {**plot, "kind": "synopsis", "sent_to_llm": True,
+                           "text": "\n\n".join(plot["paragraphs"])})
     return jsonify({"answer": answer, "sources": sources})
 
 

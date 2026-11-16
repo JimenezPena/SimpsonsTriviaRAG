@@ -245,7 +245,7 @@ tar -czf db.tar.gz batch_vector_db
 gh release upload latest-db db.tar.gz --clobber --repo JimenezPena/SimpsonsTriviaRAG   # or upload it in the release page
 ```
 
-Then redeploy on Render. The paragraphs carry `kind="synopsis"`: the quiz and the chunk retrieval ignore them, and `/api/ask` adds the best-matching paragraph to the context (as a `[Plot summary ...]` block, not listed among the sources). Re-run the command after fetching more seasons. The plot text is from Wikipedia (CC BY-SA 4.0); `wiki_url` is stored with every paragraph. Test it on a copy of `batch_vector_db` first if you want to be careful: the command only deletes documents marked `kind="synopsis"`.
+Then redeploy on Render. The paragraphs carry `kind="synopsis"`: the quiz and the chunk retrieval ignore them, and `/api/ask` uses them only for questions about an episode (see below). Re-run the command after fetching more seasons. The plot text is from Wikipedia (CC BY-SA 4.0); `wiki_url` is stored with every paragraph. Test it on a copy of `batch_vector_db` first if you want to be careful: the command only deletes documents marked `kind="synopsis"`.
 
 **Visual descriptions in the clip quiz.** `export_quiz_pool` copies each clip's `visual` description (from `cli describe`) into `data/quiz_pool.json`, and the clip-mode prompt gives it to the LLM next to the dialogue, so questions can be about visual gags. Regenerate and commit `quiz_pool.json` after describing clips.
 
@@ -262,3 +262,12 @@ Then redeploy on Render. The paragraphs carry `kind="synopsis"`: the quiz and th
 ## 📄 License
 
 No-License
+
+### Wikipedia plot in the "Ask anything" tab
+
+`trivia_gen.plot_for_question` decides, for each question, whether the Wikipedia plot answers it better than the script:
+
+* The best plot paragraph must be **closer to the question than the best script chunk** (`distance <= best chunk distance + SYNOPSIS_MARGIN`). A question that quotes a line or asks about a detail matches the dialogue better, and then no Wikipedia block is shown or sent.
+* If **2 of the 3 best paragraphs belong to the same episode**, the question is about the episode as a whole: the whole plot is shown (the best paragraph highlighted). Otherwise only that paragraph is shown.
+
+The block goes first among the sources, labelled "Wikipedia · episode plot summary" / "Wikipedia · plot summary paragraph", with the distance, a link to the article and the CC BY-SA 4.0 license; a credit line sits in the page footer. The same text is sent to the LLM as a `[Plot summary (Wikipedia) ...]` block. `SYNOPSIS_MARGIN` and `SYNOPSIS_PROBE` (top of that section in `trivia_gen.py`) tune the behaviour; the distances are shown in the web so you can calibrate them with real questions.

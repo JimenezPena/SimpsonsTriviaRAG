@@ -294,6 +294,53 @@ def retrieve_synopsis(vector_store, question, season=None, k=1):
     return vector_store.similarity_search_with_score(question, **kwargs)
 
 
+# --- Wikipedia plot in free-form Q&A ----------------------------------------
+SYNOPSIS_PROBE = 3        # plot paragraphs looked at to decide the question is about an episode
+SYNOPSIS_MARGIN = 0.0     # the plot is used if its best distance <= best script distance + margin
+WIKI_LICENSE = {"name": "CC BY-SA 4.0",
+                "url": "https://creativecommons.org/licenses/by-sa/4.0/"}
+
+
+def plot_for_question(vector_store, question, season, chunk_best_distance):
+    """Decides whether the Wikipedia plot answers the question better than the
+    script and, if so, what to show:
+
+      * the plot must be a closer match than the best script chunk
+        (distance <= chunk_best_distance + SYNOPSIS_MARGIN): a question that
+        quotes a line or asks about a detail matches the dialogue better;
+      * if at least 2 of the SYNOPSIS_PROBE best paragraphs belong to the same
+        episode, the question is about that episode as a whole: the whole plot
+        is returned (scope "episode"); otherwise only the best paragraph
+        (scope "paragraph").
+
+    Returns None, or {scope, season, title, episode_code, wiki_url, paragraphs,
+    best (1-based index of the best paragraph), distance, license}."""
+    hits = retrieve_synopsis(vector_store, question, season, k=SYNOPSIS_PROBE)
+    if not hits:
+        return None
+    best_doc, best_dist = hits[0]
+    if best_dist > chunk_best_distance + SYNOPSIS_MARGIN:
+        return None
+    m = best_doc.metadata
+    code = m.get("episode_code")
+    same = [d for d, _ in hits if d.metadata.get("episode_code") == code]
+    out = {"season": m.get("season"), "title": m.get("episode_title"),
+           "episode_code": code, "wiki_url": m.get("wiki_url") or None,
+           "distance": round(float(best_dist), 3), "license": WIKI_LICENSE}
+    if len(same) >= 2 and code:
+        got = vector_store.get(where={"$and": [{"kind": {"$eq": SYNOPSIS_KIND}},
+                                               {"episode_code": {"$eq": code}}]})
+        parts = sorted(zip(got["metadatas"], got["documents"]),
+                       key=lambda x: x[0].get("part", 0))
+        if parts:
+            texts = [t for _, t in parts]
+            best = next((i for i, (pm, _) in enumerate(parts, 1)
+                         if pm.get("part") == m.get("part")), 1)
+            return {**out, "scope": "episode", "paragraphs": texts, "best": best}
+    return {**out, "scope": "paragraph", "paragraphs": [best_doc.page_content],
+            "best": 1, "part": m.get("part"), "n_parts": m.get("n_parts")}
+
+
 def print_chunk(title, doc, score, full=True):
     """Pretty-prints one retrieved chunk with its distance score."""
     m = doc.metadata
