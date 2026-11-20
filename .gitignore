@@ -23,3 +23,6 @@ data/ingest/transcripts/
 data/ingest/chunks/
 data/ingest/chunks_en.jsonl
 data/ingest/chunks_es.jsonl
+
+# Distillation data (teacher outputs and splits)
+data/distill/

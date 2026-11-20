@@ -101,9 +101,11 @@ class BatchedGeminiEmbeddings(Embeddings):
 # ----------------------------------------------------------------------------
 # LLM (direct REST, no SDK dependency)
 # ----------------------------------------------------------------------------
-def ask_llm(prompt, system=None):
+def ask_llm(prompt, system=None, temperature=0.9):
+    # `temperature` defaults to the value the app has always used; only the
+    # offline distillation scripts pass something else.
     def build_payload(with_thinking=True):
-        gc = {"temperature": 0.9, "maxOutputTokens": 2048}
+        gc = {"temperature": temperature, "maxOutputTokens": 2048}
         if with_thinking:
             # Gemini 3 family: thinkingLevel instead of thinkingBudget.
             # "minimal" = cheapest and fastest. Thinking tokens count inside
