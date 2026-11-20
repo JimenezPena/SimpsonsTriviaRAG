@@ -52,7 +52,10 @@ class FakeTG:
         d = self.rng.choice(self.docs)
         return d.page_content, d.metadata
 
+    retrieve_calls = 0
+
     def retrieve(self, store, question, season=None, k=3):
+        self.retrieve_calls += 1
         hit = [d for d in self.docs if d.metadata["episode_title"] in question]
         rest = [d for d in self.docs if d not in hit]
         return [(d, 0.1 * i) for i, d in enumerate((hit + rest)[:k])]
@@ -77,7 +80,7 @@ class FakeTG:
 
 
 def args_for(tmp_path, **over):
-    base = dict(n=6, langs="es,en", unanswerable=0.0, season=None,
+    base = dict(n=6, langs="es,en", unanswerable=0.0, offtopic=0.0, season=None,
                 out=str(tmp_path / "teacher.jsonl"), sleep=0, max_errors=5, seed=0,
                 question_temp=0.9, answer_temp=0.2,
                 max_retries=2, retry_base=1.0, retry_cap=10.0)
@@ -209,6 +212,47 @@ def test_raw_os_errors_are_retried_and_4xx_are_fatal():
                            sleep=lambda s: pytest.fail("must not wait"), **QUIET)
 
 
+def test_offtopic_context_comes_from_other_episodes(tmp_path):
+    a = args_for(tmp_path, n=8, offtopic=1.0)
+    tg = FakeTG()
+    stats = gt.run(a, tg, retry_sleep=NO_SLEEP)
+    recs = read(a.out)
+    assert stats["written"] == 8 and tg.retrieve_calls == 0      # no retrieval at all
+    for r in recs:
+        m = r["meta"]
+        assert m["kind"] == "offtopic" and m["gold_in_context"] is False
+        assert m["plot"] is None and "Plot summary" not in r["prompt"]
+        assert len(m["retrieved"]) == tg.TOP_K
+        assert all(c["episode_id"] != m["gold"]["episode_id"] for c in m["retrieved"])
+        assert m["question_prompt"] == prompts.QUESTION_PROMPT_VERSION
+        # the context really is what the student sees
+        for c in m["retrieved"]:
+            assert f'[Season {c["season"]}, "{c["episode_title"]}"]' in r["prompt"]
+
+
+def test_offtopic_gives_up_when_no_other_episode_exists():
+    class OneEpisode(FakeTG):
+        def __init__(self):
+            super().__init__()
+            self.docs = [d for d in self.docs if d.metadata["episode_id"] == 1]
+
+    tg = OneEpisode()
+    text, meta = tg.random_chunk(None, None)
+    assert gt.random_context(tg, meta, 3) is None
+    assert gt.make_record(tg, None, text, meta, "es", "offtopic", call=gt._direct) is None
+
+
+def test_kind_mix_follows_the_fractions(tmp_path):
+    a = args_for(tmp_path, n=4, offtopic=0.5, unanswerable=0.5)   # never "answerable"
+    gt.run(a, FakeTG(), retry_sleep=NO_SLEEP)
+    assert {r["meta"]["kind"] for r in read(a.out)} <= {"offtopic", "unanswerable"}
+
+
+def test_question_prompt_asks_for_self_contained_questions():
+    s = prompts.QUESTION_SYSTEM
+    assert "SELF-CONTAINED" in s and "distinctive" in s and "the hotel" in s
+
+
 def test_gold_in_context_uses_line_overlap():
     a = {"episode_id": 1, "line_start": 16, "line_end": 35}
     assert gt.overlaps(a, {"episode_id": 1, "line_start": 31, "line_end": 50})
@@ -258,7 +302,10 @@ def test_soft_flags_and_strict():
         make_rec(5, resp="Homer hace algo en la escena que es de el programa."),  # no_citation
         make_rec(6),                                                 # clean
     ]
+    recs.append(make_rec(7, kind="offtopic", gold_in=False))                 # answered anyway
+    recs.append(make_rec(8, kind="offtopic", gold_in=False, resp=es_abst))   # correct abstention
     flags = {r["id"]: bd.flags_for(r)[1] for r in recs}
+    assert flags["id7"] == ["offtopic_but_answered"] and flags["id8"] == []
     assert flags["id1"] == ["answered_without_gold"]
     assert flags["id2"] == []
     assert flags["id3"] == ["abstained_with_gold"]
@@ -267,8 +314,8 @@ def test_soft_flags_and_strict():
     assert flags["id6"] == []
     loose, _ = bd.build(recs)
     strict, dropped = bd.build(recs, strict=True)
-    assert sum(map(len, loose.values())) == 6
-    assert sum(map(len, strict.values())) == 2 and sum(dropped.values()) == 4
+    assert sum(map(len, loose.values())) == 8
+    assert sum(map(len, strict.values())) == 3 and sum(dropped.values()) == 5  # kept: 2, 6, 8
 
 
 def test_split_is_by_episode_and_stable():

@@ -38,11 +38,26 @@ def build_qa_prompt(context, question, lang):
 
 
 # --- synthetic user questions -------------------------------------------------
+QUESTION_PROMPT_VERSION = 2     # stored in every record; v1 had no specificity rules
+
 QUESTION_SYSTEM = (
     "You help build a test set for a question-answering system about The "
-    "Simpsons. You receive a script fragment and write ONE short question, "
-    "phrased the way a fan would type it into a search box. Never mention "
-    "'the fragment', 'the text' or 'the script'. Return ONLY the question."
+    "Simpsons. The system searches a database of script fragments from ALL "
+    "episodes, so every question must be SELF-CONTAINED: someone who has not "
+    "seen the fragment must be able to tell which scene it is about.\n"
+    "You receive a script fragment and write ONE short question, phrased the "
+    "way a fan would type it into a search box. Rules:\n"
+    "- Anchor the question in at least one distinctive element of the scene: "
+    "a secondary character's name, a specific object, place, event or "
+    "memorable line. The anchor must come from the fragment.\n"
+    "- Never rely on vague references such as 'the school', 'the hotel', "
+    "'the kids', 'a man', 'this episode', and never ask about a generic "
+    "action of a main character ('What is Marge looking for?') or depend on "
+    "the fragment for context ('while talking to Lisa').\n"
+    "- Skip trivial details; ask about something a fan would plausibly "
+    "want to know.\n"
+    "- Never mention 'the fragment', 'the text' or 'the script'.\n"
+    "Return ONLY the question."
 )
 
 

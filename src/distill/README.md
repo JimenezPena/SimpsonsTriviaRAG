@@ -43,6 +43,24 @@ or the weights). One record per line:
 | `meta.gold`, `meta.gold_in_context` | the chunk the question was written from, and whether the retriever returned it (line-range overlap) |
 | `meta.retrieved` | the chunks in the prompt, with distances |
 
+Question kinds (`meta.kind`):
+
+| kind | question | context the student sees | teacher should |
+|---|---|---|---|
+| `answerable` | answered by the gold chunk | the real retrieval (it sometimes misses) | answer, or abstain after a miss |
+| `unanswerable` (`--unanswerable 0.15`) | near-miss: same scene, not answered by the chunk | the real retrieval | abstain |
+| `offtopic` (`--offtopic 0.10`) | a normal answerable question | random chunks from **other episodes**, no plot summary | abstain |
+
+The label is only the intent: `build_dataset` flags the cases where the
+teacher answered anyway (`*_but_answered`), and `--strict` drops them. Too many
+abstentions would make the student over-abstain: `metrics.py` reports both
+`overconfident` and `abstain agree`.
+
+Question prompt v2 (stored as `meta.question_prompt`) requires self-contained
+questions anchored in a distinctive element of the scene (v1 produced things
+like "What is Marge looking for while talking to Lisa?", which no retriever
+can find). Records without `question_prompt` come from v1.
+
 Questions are written in the target language over the (English) script chunks,
 so the Spanish examples exercise cross-lingual retrieval too: `gold_in_context`
 by language is already a first number for the multilingual table.

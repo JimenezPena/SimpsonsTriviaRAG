@@ -2,10 +2,11 @@
 
 For every example (2 Gemini calls + 1 embedding call):
   1. sample a random script chunk (the "gold" chunk),
-  2. the teacher writes a user-style question about it (or, with probability
-     --unanswerable, one it does NOT answer: abstention examples),
+  2. the teacher writes a self-contained, user-style question about it (with
+     probability --unanswerable, a near-miss one the chunk does NOT answer),
   3. the REAL retriever runs on that question (so the context contains the
-     retrieval misses production would have),
+     retrieval misses production would have); with probability --offtopic the
+     context is instead random chunks from OTHER episodes (total failure),
   4. the teacher answers with the production prompt (ANSWER_SYSTEM + context).
 
 Output: JSONL, one record per line, resumable (re-running appends; a gold
@@ -30,8 +31,9 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from distill.prompts import (LANG_NAMES, build_qa_prompt, build_question_prompt,
-                             clean_question, format_context, QUESTION_SYSTEM)
+from distill.prompts import (LANG_NAMES, QUESTION_PROMPT_VERSION, QUESTION_SYSTEM,
+                             build_qa_prompt, build_question_prompt, clean_question,
+                             format_context)
 from distill.retry import QuotaExhausted, call_with_retry
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -78,40 +80,79 @@ def _direct(fn, *a, **k):
     return fn(*a, **k)
 
 
-def make_record(tg, store, text, gold_meta, lang, answerable, call=_direct,
+KINDS = ("answerable", "unanswerable", "offtopic")
+
+
+def random_context(tg, gold_meta, k, tries=60):
+    """k random chunks from episodes OTHER than the gold one, or None.
+    Simulates a total retrieval failure: a fine question next to a context
+    that has nothing to do with it."""
+    picked, seen = [], set()
+    for _ in range(tries):
+        text, meta = tg.random_chunk(None, None)
+        if meta.get("episode_id") == gold_meta.get("episode_id") or chunk_key(meta) in seen:
+            continue
+        seen.add(chunk_key(meta))
+        picked.append((text, meta))
+        if len(picked) == k:
+            return picked
+    return None
+
+
+def make_record(tg, store, text, gold_meta, lang, kind, call=_direct,
                 question_temp=0.9, answer_temp=0.2):
     """One teacher example. `call` wraps every network call (retries).
     Raises QuotaExhausted / RuntimeError / OSError when a call finally fails.
 
+    kind:
+      answerable    question the gold chunk answers; context = real retrieval
+                    (which sometimes misses: natural abstention examples)
+      unanswerable  near-miss question the gold chunk does NOT answer; context
+                    = real retrieval
+      offtopic      an answerable question, but the context is random chunks
+                    from other episodes (total retrieval failure); no plot
+    The label is only the intent: what the teacher actually answered is
+    checked later by build_dataset.
+
     Temperatures: the question writer stays warm (diverse inputs; noise is
     harmless there), the answer is cold (the student should imitate the
     teacher's most likely answer, not one random draw)."""
-    q_prompt = build_question_prompt(text, gold_meta["season"],
-                                     gold_meta["episode_title"], lang, answerable)
+    assert kind in KINDS, kind
+    q_prompt = build_question_prompt(text, gold_meta["season"], gold_meta["episode_title"],
+                                     lang, answerable=kind != "unanswerable")
     question = clean_question(call(tg.ask_llm, q_prompt, system=QUESTION_SYSTEM,
                                    temperature=question_temp))
     if question is None:
         return None
 
-    results = call(tg.retrieve, store, question, None, k=tg.TOP_K)
-    if not results:
-        return None
-    sent = results[:tg.TOP_K]
-    try:                                  # same optional plot lookup as the app
-        plot = call(tg.plot_for_question, store, question, None, results[0][1])
-    except QuotaExhausted:
-        raise
-    except Exception:
-        plot = None
+    if kind == "offtopic":
+        chosen = random_context(tg, gold_meta, tg.TOP_K)
+        if chosen is None:
+            return None
+        items = [(m["season"], m["episode_title"], t) for t, m in chosen]
+        retrieved = [slim(m) for _, m in chosen]
+        plot, gold_in_context = None, False
+    else:
+        results = call(tg.retrieve, store, question, None, k=tg.TOP_K)
+        if not results:
+            return None
+        sent = results[:tg.TOP_K]
+        try:                              # same optional plot lookup as the app
+            plot = call(tg.plot_for_question, store, question, None, results[0][1])
+        except QuotaExhausted:
+            raise
+        except Exception:
+            plot = None
+        items = [(d.metadata["season"], d.metadata["episode_title"], d.page_content)
+                 for d, _ in sent]
+        retrieved = [slim(d.metadata, s) for d, s in sent]
+        gold_in_context = any(overlaps(gold_meta, d.metadata) for d, _ in sent)
 
-    context = format_context(
-        [(d.metadata["season"], d.metadata["episode_title"], d.page_content)
-         for d, _ in sent], plot)
+    context = format_context(items, plot)
     prompt = build_qa_prompt(context, question, lang)
     response = call(tg.ask_llm, prompt, system=tg.ANSWER_SYSTEM,
                     temperature=answer_temp)
 
-    gold_in_context = any(overlaps(gold_meta, d.metadata) for d, _ in sent)
     gold_id = f"{gold_meta.get('episode_id')}:{gold_meta.get('line_start')}"
     return {
         "id": hashlib.sha1(f"{lang}|{question}|{gold_id}".encode()).hexdigest()[:12],
@@ -122,10 +163,11 @@ def make_record(tg, store, text, gold_meta, lang, answerable, call=_direct,
         "response": response,
         "meta": {
             "question": question,
-            "kind": "answerable" if answerable else "unanswerable",
+            "kind": kind,
+            "question_prompt": QUESTION_PROMPT_VERSION,
             "gold": slim(gold_meta),
             "gold_in_context": gold_in_context,
-            "retrieved": [slim(d.metadata, s) for d, s in sent],
+            "retrieved": retrieved,
             "plot": ({"scope": plot.get("scope"), "season": plot.get("season"),
                       "title": plot.get("title")} if plot else None),
             "teacher": tg.LLM_MODEL,
@@ -165,9 +207,12 @@ def run(args, tg, retry_sleep=time.sleep):
                 print("could not find an unused chunk; stopping")
                 break
             lang = langs[(n_before + stats["written"]) % len(langs)]
-            answerable = rng.random() >= args.unanswerable
+            roll = rng.random()
+            kind = ("offtopic" if roll < args.offtopic else
+                    "unanswerable" if roll < args.offtopic + args.unanswerable
+                    else "answerable")
             try:
-                rec = make_record(tg, store, text, meta, lang, answerable, call=call,
+                rec = make_record(tg, store, text, meta, lang, kind, call=call,
                                   question_temp=args.question_temp,
                                   answer_temp=args.answer_temp)
             except QuotaExhausted as e:
@@ -201,7 +246,10 @@ def main(argv=None):
     p.add_argument("--langs", default="es,en",
                    help="comma-separated, cycled one by one (default es,en)")
     p.add_argument("--unanswerable", type=float, default=0.15,
-                   help="fraction of questions the gold chunk does NOT answer")
+                   help="fraction of near-miss questions the gold chunk does NOT answer")
+    p.add_argument("--offtopic", type=float, default=0.10,
+                   help="fraction of questions paired with random chunks from other "
+                        "episodes (total retrieval failure)")
     p.add_argument("--season", type=int, default=None, help="restrict gold chunks")
     p.add_argument("--out", default=DEFAULT_OUT)
     p.add_argument("--sleep", type=float, default=2.0, help="seconds between examples")

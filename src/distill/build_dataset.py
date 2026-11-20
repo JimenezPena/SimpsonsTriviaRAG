@@ -11,7 +11,10 @@ Filtering (all deterministic, no API calls):
                               answered instead of saying it does not know
       abstained_with_gold     the gold chunk WAS retrieved and the teacher
                               still said it does not know
-      unanswerable_but_answered   question built to be unanswerable, answered
+      unanswerable_but_answered   near-miss question the chunk does not answer,
+                              yet the teacher answered
+      offtopic_but_answered   context was random chunks from other episodes,
+                              yet the teacher answered (from its own knowledge)
       no_citation             a real answer that cites none of the episodes
                               in its context
 
@@ -83,8 +86,8 @@ def flags_for(rec):
         soft.append("answered_without_gold")
     if answerable and meta["gold_in_context"] and abst:
         soft.append("abstained_with_gold")
-    if not answerable and not abst:
-        soft.append("unanswerable_but_answered")
+    if not answerable and not abst:       # unanswerable_ / offtopic_but_answered
+        soft.append(f"{meta['kind']}_but_answered")
     if not abst:
         titles = {r["episode_title"].lower() for r in meta["retrieved"]
                   if r.get("episode_title")}
@@ -153,10 +156,19 @@ def main(argv=None):
           + " ".join(f"{k}={len(v)}" for k, v in splits.items()))
     print("dropped:", dict(dropped) or "-")
     langs = collections.Counter(r["meta"]["lang"] for v in splits.values() for r in v)
-    gold = collections.Counter(r["meta"]["gold_in_context"] for v in splits.values() for r in v)
+    kinds = collections.Counter(r["meta"]["kind"] for v in splits.values() for r in v)
+    hit = collections.defaultdict(lambda: [0, 0])      # answerable questions only
+    for v in splits.values():
+        for r in v:
+            if r["meta"]["kind"] == "answerable":
+                h = hit[r["meta"]["lang"]]
+                h[0] += bool(r["meta"]["gold_in_context"])
+                h[1] += 1
     soft = collections.Counter(f for v in splits.values() for r in v for f in r["meta"]["flags"])
     print("by language:", dict(langs))
-    print("gold chunk retrieved:", dict(gold))
+    print("by kind:", dict(kinds))
+    print("answerable, gold chunk retrieved:",
+          {l: f"{a}/{b} ({100 * a / b:.0f}%)" for l, (a, b) in sorted(hit.items())} or "-")
     print("soft flags kept:", dict(soft) or "-")
     return 0
 
