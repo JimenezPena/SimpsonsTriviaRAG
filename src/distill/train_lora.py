@@ -97,6 +97,13 @@ def main(argv=None):
     def collate(batch):
         return {k: torch.tensor(v) for k, v in pad_batch(batch, pad_id).items()}
 
+    # `warmup_ratio` was removed in recent transformers: compute the steps
+    # ourselves (an integer works in every version)
+    steps_per_epoch = max(1, -(-len(data["train"]) // (args.batch * args.grad_accum)))
+    total_steps = args.max_steps if args.max_steps > 0 else int(steps_per_epoch * args.epochs)
+    warmup_steps = max(1, int(0.05 * total_steps))
+    print(f"{steps_per_epoch} steps/epoch, {total_steps} steps total, {warmup_steps} warmup")
+
     native_bf16 = torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8
     os.makedirs(args.out, exist_ok=True)
     ckpt_dir = os.path.join(args.out, "checkpoints")
@@ -108,7 +115,7 @@ def main(argv=None):
             per_device_eval_batch_size=args.batch,
             gradient_accumulation_steps=args.grad_accum,
             num_train_epochs=args.epochs, max_steps=args.max_steps,
-            learning_rate=args.lr, lr_scheduler_type="cosine", warmup_ratio=0.05,
+            learning_rate=args.lr, lr_scheduler_type="cosine", warmup_steps=warmup_steps,
             weight_decay=0.01, optim="adamw_8bit",
             fp16=not native_bf16, bf16=native_bf16,
             logging_steps=5, eval_strategy="epoch",
