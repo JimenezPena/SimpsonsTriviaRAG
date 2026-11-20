@@ -5,8 +5,9 @@ fine-tuned with LoRA, using the current system as the **teacher**. The student
 gets the same input as production (system prompt + retrieved context +
 question) and learns to write the teacher's answer. Retrieval stays as it is.
 
-Pipeline: `gen_teacher` → `build_dataset` → *(train LoRA)* → *(evaluate)*.
-Only the first two are implemented so far.
+Pipeline: `gen_teacher` → `build_dataset` → `train_lora` → `eval_student` / `metrics`.
+Steps 1-2 run locally; 3-4 run on a free Colab T4 through
+`notebooks/distill_colab.ipynb`.
 
 ## 1. Generate teacher data
 
@@ -57,6 +58,36 @@ Writes `train.jsonl`, `val.jsonl`, `test.jsonl` (`messages` format for TRL /
 `apply_chat_template`, plus `meta`). The split is **by episode**, never by
 example: chunks overlap by 5 lines, so a random split would leak. Flags are
 explained at the top of `build_dataset.py`.
+
+## 3. Train the student (Colab)
+
+Open `notebooks/distill_colab.ipynb` on a T4 runtime. Put `train/val/test.jsonl`
+in Drive (`MyDrive/simpsons_distill/data/`: git-ignored, not in the repo). The
+notebook evaluates the **base** model zero-shot, smoke-tests training for 5
+steps, trains with LoRA (checkpoints to Drive every 25 steps, resumes if the
+session is cut) and evaluates the adapter.
+
+Choosing the student: run the base-model evaluation for each candidate on the
+same 30 validation questions first (a few minutes each), then train the two
+best. Default `unsloth/Qwen3-1.7B` (QLoRA fits a T4 comfortably). Candidates:
+`unsloth/Gemma-3-4b-it` (quality ceiling), `unsloth/Llama-3.2-1B-Instruct`
+(size floor; no Catalan). Qwen3.5 is possible but needs transformers v5 and
+16-bit LoRA (Unsloth advises against 4-bit for it), and Colab ships neither.
+
+Training loss is only on the answer tokens; examples longer than
+`--max-seq-len` (4096) are skipped, never truncated; the script prints token
+lengths so you can tune it.
+
+## 4. Compare systems
+
+`python -m distill.metrics --data val.jsonl --preds base=... lora=...` prints
+one table per language with the teacher as reference row, scoring every system
+on the same questions. Metrics are listed in `metrics.py`; they are proxies, so
+read some answers by hand.
+
+`train_lora.py` and `eval_student.py` were written against Unsloth's documented
+API but have not been run (no GPU where they were written): the first Colab
+run is their real test, hence the 5-step smoke test.
 
 ## Drift guard
 
