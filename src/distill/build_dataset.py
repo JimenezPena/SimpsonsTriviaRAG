@@ -60,6 +60,12 @@ def lang_ok(text, lang):
     return own >= 2 and own >= other
 
 
+def stopword_counts(text):
+    """{lang: stopwords of that language found in text}: the evidence behind lang_ok."""
+    toks = words(text)
+    return {l: sum(t in s for t in toks) for l, s in sorted(_STOP.items())}
+
+
 def n_sentences(text):
     return len([s for s in re.split(r"[.!?]+(?:\s|$)", text) if s.strip()])
 

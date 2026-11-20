@@ -77,6 +77,26 @@ Writes `train.jsonl`, `val.jsonl`, `test.jsonl` (`messages` format for TRL /
 example: chunks overlap by 5 lines, so a random split would leak. Flags are
 explained at the top of `build_dataset.py`.
 
+### Reviewing flagged records by hand
+
+The filters drop records without saving them, so use `review.py` to look at
+them with the evidence next to them:
+
+```bash
+PYTHONPATH=src python -m distill.review --flag abstained_with_gold --n 20
+PYTHONPATH=src python -m distill.review --flag wrong_lang --lang es --n 20
+PYTHONPATH=src python -m distill.review --flag abstained_with_gold --prompt-version 2
+# after filling in the "Verdict:" lines of the generated markdown:
+PYTHONPATH=src python -m distill.review --tally data/distill/review_wrong_lang.md
+```
+
+Each block shows the question, the teacher's answer and, for
+`abstained_with_gold`, the retrieved chunk that contains the source of the
+question (is the answer really there?); for `wrong_lang`, the stopword counts
+the heuristic used. Nothing is lost by the filters: `build_dataset` re-reads
+`teacher_qa.jsonl`, so a better heuristic recovers dropped examples with no
+new API calls.
+
 ## 3. Train the student (Colab)
 
 Open `notebooks/distill_colab.ipynb` on a T4 runtime. Put `train/val/test.jsonl`
