@@ -18,6 +18,8 @@ sys.path.insert(0, os.path.dirname(__file__))   # allow `import trivia_gen`
 
 from flask import Flask, request, jsonify, send_from_directory
 
+from agentic import router as agentic_router
+from agentic.catalog import Catalog, load_indexed_from_chroma
 import trivia_gen as tg   # reuses: load_vector_store, random_chunk, retrieve,
                           # ask_llm, TRIVIA_SYSTEM, ANSWER_SYSTEM, TOP_K, MAX_SEASON
 
@@ -43,6 +45,31 @@ def get_store():
             _STORE = tg.load_vector_store()
             print(f"[chroma] vector store loaded in {time.time()-t:.1f}s", flush=True)
         return _STORE
+
+# Optional router (set ROUTER=on): questions about the episode catalog (how many
+# episodes, which season...) are answered by metadata tools, everything else
+# goes through the RAG exactly as before. Any failure falls back to the RAG.
+ROUTER_ON = os.environ.get("ROUTER", "").strip().lower() in ("1", "on", "true", "yes")
+_CATALOG = None
+_CATALOG_TRIED = False
+
+
+def get_catalog():
+    global _CATALOG, _CATALOG_TRIED
+    if not _CATALOG_TRIED:
+        _CATALOG_TRIED = True
+        try:
+            try:
+                indexed = load_indexed_from_chroma(tg.DB_PATH)
+            except Exception as e:           # coverage is optional
+                indexed = None
+                print(f"[router] no script coverage info: {e}", flush=True)
+            _CATALOG = Catalog.load(indexed=indexed)
+            print(f"[router] catalog ready: {len(_CATALOG.episodes)} episodes", flush=True)
+        except Exception as e:
+            print(f"[router] disabled, catalog not available: {e}", flush=True)
+    return _CATALOG
+
 
 # trivia questions in flight: the answer stays on the server until reveal
 QUESTIONS = {}
@@ -267,6 +294,16 @@ def api_ask():
     lang = body.get("lang") if body.get("lang") in ("es", "en") else "en"
     if not question:
         return jsonify({"error": "empty question"}), 400
+
+    if ROUTER_ON and get_catalog() is not None:
+        try:
+            routed = agentic_router.answer_if_metadata(question, lang, tg.ask_llm,
+                                                       get_catalog())
+        except Exception as e:               # the router must never block the RAG
+            routed = None
+            print(f"[router] failed, using the RAG: {e}", flush=True)
+        if routed:
+            return jsonify(routed)
 
     results = tg.retrieve(get_store(), question, season,
                           k=max(top_n, tg.TOP_K))

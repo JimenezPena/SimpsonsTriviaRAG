@@ -1,0 +1,42 @@
+{"q": "¿Cuántos episodios tiene la temporada 10?", "lang": "es", "route": "metadata", "tool": "count_episodes", "args": {"season": 10}}
+{"q": "How many episodes are in season 3?", "lang": "en", "route": "metadata", "tool": "count_episodes", "args": {"season": 3}}
+{"q": "¿Cuántas temporadas hay?", "lang": "es", "route": "metadata", "tool": "count_seasons", "args": {}}
+{"q": "How many seasons does the catalog have?", "lang": "en", "route": "metadata", "tool": "count_seasons", "args": {}}
+{"q": "¿Cuántos episodios hay en total?", "lang": "es", "route": "metadata", "tool": "count_episodes", "args": {}}
+{"q": "How many episodes are there in total?", "lang": "en", "route": "metadata", "tool": "count_episodes", "args": {}}
+{"q": "¿Cuál es el título del episodio 5 de la temporada 7?", "lang": "es", "route": "metadata", "tool": "episode_title", "args": {"season": 7, "episode": 5}}
+{"q": "What is the title of episode 12 of season 2?", "lang": "en", "route": "metadata", "tool": "episode_title", "args": {"season": 2, "episode": 12}}
+{"q": "Dame la lista de episodios de la temporada 1", "lang": "es", "route": "metadata", "tool": "list_episodes", "args": {"season": 1}}
+{"q": "List the episodes of season 9", "lang": "en", "route": "metadata", "tool": "list_episodes", "args": {"season": 9}}
+{"q": "¿En qué temporada está \"Lisa the Vegetarian\"?", "lang": "es", "route": "metadata", "tool": "find_episode", "args": {"title": "Lisa the Vegetarian"}}
+{"q": "Which season is \"Homer's Odyssey\" in?", "lang": "en", "route": "metadata", "tool": "find_episode", "args": {"title": "Homer's Odyssey"}}
+{"q": "¿Qué número de episodio es \"Bart the Genius\"?", "lang": "es", "route": "metadata", "tool": "find_episode", "args": {"title": "Bart the Genius"}}
+{"q": "What number in its season is \"Marge vs. the Monorail\"?", "lang": "en", "route": "metadata", "tool": "find_episode", "args": {"title": "Marge vs. the Monorail"}}
+{"q": "¿Cuántos episodios tiene la temporada 30?", "lang": "es", "route": "metadata", "tool": "count_episodes", "args": {"season": 30}}
+{"q": "What is the first episode of season 4?", "lang": "en", "route": "metadata", "tool": "episode_title", "args": {"season": 4, "episode": 1}}
+{"q": "¿Cómo se llama el capítulo 3 de la temporada 8?", "lang": "es", "route": "metadata", "tool": "episode_title", "args": {"season": 8, "episode": 3}}
+{"q": "How many episodes does the 11th season have?", "lang": "en", "route": "metadata", "tool": "count_episodes", "args": {"season": 11}}
+{"q": "¿Cuántos capítulos tiene la quinta temporada?", "lang": "es", "route": "metadata", "tool": "count_episodes", "args": {"season": 5}}
+{"q": "¿En qué temporada sale el episodio Radioactive Man?", "lang": "es", "route": "metadata", "tool": "find_episode", "args": {"title": "Radioactive Man"}}
+{"q": "¿En qué episodio dice Homer que no sabe por qué se fueron?", "lang": "es", "route": "corpus", "tool": null, "args": {}}
+{"q": "In which episode does Bart prank call Moe?", "lang": "en", "route": "corpus", "tool": null, "args": {}}
+{"q": "¿Qué pasa en el episodio de Lisa the Vegetarian cuando Homer asa el cerdo?", "lang": "es", "route": "corpus", "tool": null, "args": {}}
+{"q": "What happens in the season 5 episode where Homer joins the Stonecutters?", "lang": "en", "route": "corpus", "tool": null, "args": {}}
+{"q": "¿Cuántas veces dice Homer \"D'oh\" en este episodio?", "lang": "es", "route": "corpus", "tool": null, "args": {}}
+{"q": "How many times does Bart say Ay caramba in season 2?", "lang": "en", "route": "corpus", "tool": null, "args": {}}
+{"q": "¿Qué le dice Marge a Homer sobre las bolas de bolos?", "lang": "es", "route": "corpus", "tool": null, "args": {}}
+{"q": "Why does Bart sell his soul?", "lang": "en", "route": "corpus", "tool": null, "args": {}}
+{"q": "Who does Moe call during the prank call?", "lang": "en", "route": "corpus", "tool": null, "args": {}}
+{"q": "¿De qué acusan a Bart los niños en el colegio?", "lang": "es", "route": "corpus", "tool": null, "args": {}}
+{"q": "¿De qué color son los Simpson?", "lang": "es", "route": "general", "tool": null, "args": {}}
+{"q": "Who created The Simpsons?", "lang": "en", "route": "general", "tool": null, "args": {}}
+{"q": "¿Quién da la voz a Homer en inglés?", "lang": "es", "route": "general", "tool": null, "args": {}}
+{"q": "What network originally aired The Simpsons?", "lang": "en", "route": "general", "tool": null, "args": {}}
+{"q": "¿Cuántos años tiene Bart?", "lang": "es", "route": "general", "tool": null, "args": {}}
+{"q": "How many fingers do the Simpsons have on each hand?", "lang": "en", "route": "general", "tool": null, "args": {}}
+{"q": "¿Cuándo se estrenó la serie?", "lang": "es", "route": "general", "tool": null, "args": {}}
+{"q": "Who won the football world cup?", "lang": "en", "route": "offtopic", "tool": null, "args": {}}
+{"q": "¿Cuál es la capital de Francia?", "lang": "es", "route": "offtopic", "tool": null, "args": {}}
+{"q": "Write me a poem about the sea", "lang": "en", "route": "offtopic", "tool": null, "args": {}}
+{"q": "How many episodes does Breaking Bad season 2 have?", "lang": "en", "route": "offtopic", "tool": null, "args": {}}
+{"q": "¿Cuántas temporadas tiene Los Soprano?", "lang": "es", "route": "offtopic", "tool": null, "args": {}}

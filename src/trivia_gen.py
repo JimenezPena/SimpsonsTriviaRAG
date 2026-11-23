@@ -29,6 +29,7 @@ import urllib.error
 from dotenv import load_dotenv
 from langchain_chroma import Chroma
 from langchain_core.embeddings import Embeddings
+from llm_text import candidate_text
 
 # ==================== CONFIGURATION ====================
 # the DB created by ingest_batch.py; anchored to the project root so it does not
@@ -133,7 +134,7 @@ def ask_llm(prompt, system=None, temperature=0.9):
         try:
             with urllib.request.urlopen(req, timeout=LLM_TIMEOUT) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            return candidate_text(data)
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", "ignore")
             if e.code == 400 and with_thinking:
