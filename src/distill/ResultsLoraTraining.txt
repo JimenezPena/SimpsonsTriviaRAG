@@ -1,0 +1,47 @@
+Training Corpus:
+
+read 898 | kept 686 | train=470 val=120 test=96
+dropped: {'abstained_with_gold': 39, 'answered_without_gold': 20, 'no_citation': 60, 'unanswerable_but_answered': 75, 'foreign_quote': 25, 'offtopic_but_answered': 1, 'too_long': 1}
+by language: {'es': 325, 'en': 361}
+by kind: {'answerable': 577, 'unanswerable': 45, 'offtopic': 64}
+answerable, gold chunk retrieved: {'en': '293/307 (95%)', 'es': '253/270 (94%)'}
+soft flags kept: -
+
+
+Training time:
+
+Llama (8.4 min)
+Qwen (12.2 min )
+
+
+Results in test
+
+**all**
+
+| system | n | lang ok | <=6 sent | cites | abstain agree | overconfident | chrF | p50 s | p95 s | tok/s |
+|---|---|---|---|---|---|---|---|---|---|---|
+| teacher		 | 96 | 97% | 100% | 99% | 100% | 0% | 100.00 | - | - | - |
+| base Llama	 | 96 | 89% | 95% | 11% | 72% | 85% | 29.83 | 0.30 | 2.19 | 84.60 |
+| base Qwen	 | 96 | 94% | 100% | 92% | 91% | 45% | 56.20 | 0.73 | 1.13 | 58.37 |
+| lora Llama	 | 96 | 97% | 100% | 99% | 85% | 60% | 57.62 | 0.51 | 0.82 | 63.04 |
+| lora Qwen	 | 96 | 95% | 100% | 99% | 92% | 40% | 61.82 | 0.73 | 1.09 | 47.87 |
+
+**en**
+
+| system | n | lang ok | <=6 sent | cites | abstain agree | overconfident | chrF | p50 s | p95 s | tok/s |
+|---|---|---|---|---|---|---|---|---|---|---|
+| teacher		 | 54 | 96% | 100% | 98% | 100% | 0% | 100.00 | - | - | - |
+| base Llama	 | 54 | 83% | 98% | 8% | 81% | 91% | 32.25 | 0.27 | 0.50 | 65.97 |
+| base Qwen	 | 54 | 100% | 100% | 92% | 89% | 55% | 60.79 | 0.63 | 0.92 | 52.55 |
+| lora Llama	 | 54 | 100% | 100% | 98% | 83% | 82% | 60.40 | 0.49 | 0.74 | 58.42 |
+| lora Qwen	 | 54 | 98% | 100% | 98% | 89% | 55% | 65.41 | 0.70 | 1.03 | 44.86 |
+
+**es**
+
+| system | n | lang ok | <=6 sent | cites | abstain agree | overconfident | chrF | p50 s | p95 s | tok/s |
+|---|---|---|---|---|---|---|---|---|---|---|
+| teacher		 | 42 | 98% | 100% | 100% | 100% | 0% | 100.00 | - | - | - |
+| base Llama	 | 42 | 95% | 90% | 17% | 60% | 78% | 26.70 | 0.49 | 2.21 | 97.10 |
+| base Qwen	 | 42 | 86% | 100% | 92% | 93% | 33% | 50.29 | 0.82 | 1.25 | 64.64 |
+| lora Llama	 | 42 | 93% | 100% | 100% | 88% | 33% | 54.04 | 0.54 | 0.88 | 68.65 |
+| lora Qwen	 | 42 | 90% | 100% | 100% | 95% | 22% | 57.21 | 0.78 | 1.10 | 51.51 |
