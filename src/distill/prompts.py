@@ -10,13 +10,11 @@ If you change the prompt in app.py, change it here too (and regenerate the
 data): a train/serve mismatch silently costs accuracy.
 """
 
-# language code -> name used inside the prompt. app.py only uses es/en today;
-# ca/de are here for the multilingual experiments.
+# language code -> name used inside the prompt (same as app.py). Only es/en for
+# now; to add a language also add its stopwords in build_dataset._STOP.
 LANG_NAMES = {
     "es": "Spanish (castellano)",
     "en": "English",
-    "ca": "Catalan",
-    "de": "German",
 }
 
 
@@ -38,7 +36,8 @@ def build_qa_prompt(context, question, lang):
 
 
 # --- synthetic user questions -------------------------------------------------
-QUESTION_PROMPT_VERSION = 2     # stored in every record; v1 had no specificity rules
+QUESTION_PROMPT_VERSION = 3     # stored in every record; v1: no specificity rules; v2: self-contained;
+#                                 v3: every fact in the question must come from the fragment
 
 QUESTION_SYSTEM = (
     "You help build a test set for a question-answering system about The "
@@ -57,12 +56,18 @@ QUESTION_SYSTEM = (
     "- Skip trivial details; ask about something a fan would plausibly "
     "want to know.\n"
     "- Never mention 'the fragment', 'the text' or 'the script'.\n"
+    "- Every name, object and claim in the question must appear in the "
+    "fragment. Do not use outside knowledge about the show, and do not "
+    "assume anything the fragment does not state (no false premises: do not "
+    "ask why someone did something unless the fragment says they did it).\n"
+    "- Ask about what is explicitly said or shown in the fragment, not about "
+    "what is never revealed in it (reasons, motives, offscreen events).\n"
     "Return ONLY the question."
 )
 
 
 def build_question_prompt(text, season, title, lang, answerable=True):
-    relation = ("is clearly answered by" if answerable else
+    relation = ("is clearly and fully answered by" if answerable else
                 "is about the same characters or episode but is NOT answered by")
     return (f"Script fragment (season {season}, episode \"{title}\"):\n\n{text}\n\n"
             f"Write a question in {LANG_NAMES[lang]} that {relation} this fragment.")

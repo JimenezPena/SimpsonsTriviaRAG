@@ -292,6 +292,144 @@ def test_hard_flags_are_dropped():
     assert dropped["empty"] == 1 and dropped["wrong_lang"] == 1 and dropped["too_long"] == 1
 
 
+REAL_ABSTENTIONS = [   # teacher answers from the manual review of abstained_with_gold
+    'The provided context does not contain the answer to your question.\n\nSource: "E-I-E-I"',
+    "El contexto proporcionado no contiene información sobre qué personaje se disloca la "
+    "mandíbula. \n\nEpisode: 'Homer's Triple Bypass'",
+    'El contexto no contiene la razón por la cual llaman a Homer "Coronel Homer", ya que él '
+    "solo menciona que no es por ser un idiota del ejército.",
+    "El contexto no contiene la respuesta a esa pregunta.",
+    "The provided context does not contain an excuse from Homer for having so many bowling balls; "
+    "he simply avoids answering Marge.",
+    "El contexto no menciona que Homer anuncie un concurso en la central nuclear.",
+    "El contexto proporcionado no contiene la razón exacta por la cual Homer se siente avergonzado.",
+    "Based on the provided context, it is not mentioned what Bart uses as his escape route.",
+    "The provided context does not mention Bart speaking to his parents about Sideshow Bob.",
+    "The context does not contain the answer to what prize Homer got after the riot.",
+    "El contexto no proporciona esa información; solo menciona que Homer decide llamar a sus amigos.",
+    "El contexto no contiene el título específico del libro, ya que Homer solo lo menciona.",
+    "There is no information about that in the passage.",
+    "No se menciona quién llama Homer. Fuente: 'X'",
+]
+REAL_ANSWERS = [       # the false positive found in the review, and similar real answers
+    'Once they are back home, Homer says he doesn\'t know why they ever left in the first place. '
+    'This information comes from the episode "E-I-E-I-(Annoyed Grunt)".',
+    "Homer says that he does not know the answer. Source: 'Episode 1'",
+    "Homer no dice nada y se marcha de la cocina. Episodio: 'Episode 1'",
+    "Marge cannot find her keys and blames Homer. Source: 'Episode 1'",
+    "Homer dice que no sabe por qué se fueron. Episodio: 'Episode 1'",
+]
+
+
+def test_is_abstention_on_real_teacher_answers():
+    for text in REAL_ABSTENTIONS:
+        assert bd.is_abstention(text), text
+    for text in REAL_ANSWERS:
+        assert not bd.is_abstention(text), text
+
+
+def test_a_real_answer_with_doesnt_know_is_not_abstained_with_gold():
+    r = make_rec(1, lang="en", resp=REAL_ANSWERS[0])
+    assert "abstained_with_gold" not in bd.flags_for(r)[1]
+
+
+def test_lang_ok_real_cases_from_manual_review():
+    # short English answers with a single English stopword were wrongly flagged
+    assert bd.lang_ok('Homer asks Dr. Julius Hibbert to recommend a doctor who will help '
+                      'him. (Episode: "King-Size Homer")', "en")
+    assert bd.lang_ok("Sideshow Bob complains to Bart about aviation no longer being a "
+                      "gentleman's pursuit.\n\nSource: \"Sideshow Bob's Last Gleaming\"", "en")
+    # a Spanish answer with no stopword of the list and an English citation
+    assert bd.lang_ok("Macarthur Parker llevaba 12 años sin encontrarle trabajo a Troy "
+                      "McClure.\nEpisode: 'A Fish Called Selma'", "es")
+    # Spanish prose around English lyrics: the quotes do not count for lang_ok
+    lyrics = ('El Sr. Burns canta una canción que comienza con la letra: "SOME MEN HUNT FOR '
+              'SPORT, / OTHERS HUNT FOR FOOD / THE ONLY THING I\'M HUNTING FOR / IS AN OUTFIT '
+              'THAT LOOKS GOOD...", y continúa cantando "SEE MY VEST". '
+              "Episodio: 'Two Dozen and One Greyhounds'.")
+    assert bd.lang_ok(lyrics, "es")
+
+
+def test_lang_ok_still_catches_the_wrong_language_and_empty_answers():
+    assert not bd.lang_ok("The quick brown fox is in the house and the dog is on the mat.", "es")
+    assert not bd.lang_ok("Homer hace algo en la escena que es de el programa.", "en")
+    assert not bd.lang_ok("", "es") and not bd.lang_ok("   ", "en")
+    # English prose with a Spanish-looking quote and citation is still English
+    assert bd.lang_ok('Homer says "no tengo la menor idea de lo que pasa" to Marge in the '
+                      "kitchen. Source: \"Episode 1\"", "en")
+    assert bd.lang_ok("anything", "xx")                      # unsupported language: no verdict
+
+
+def test_foreign_quote_flag():
+    lyrics = ('El Sr. Burns canta una canción que comienza con la letra: "SOME MEN HUNT FOR '
+              'SPORT, OTHERS HUNT FOR FOOD", y la sigue. Episodio: \'Episode 1\'.')
+    hard, soft = bd.flags_for(make_rec(1, resp=lyrics))
+    assert hard == [] and "foreign_quote" in soft
+    assert bd.foreign_quotes(lyrics, "en") == []              # English quote in an English answer
+    # episode titles and the citation line are not foreign quotes
+    title = 'El episodio "The Man Who Came to Be Dinner" trata de eso en la serie. Fuente: "Episode 1"'
+    assert bd.foreign_quotes(title, "es", ["The Man Who Came to Be Dinner"]) == []
+    r = make_rec(2, resp=title)
+    r["meta"]["retrieved"] = [{"episode_title": "The Man Who Came to Be Dinner"}]
+    assert "foreign_quote" not in bd.flags_for(r)[1]          # the title is a known episode
+    assert "foreign_quote" in bd.flags_for(make_rec(2, resp=title.replace(
+        "The Man Who Came to Be Dinner", "THE MAN WHO CAME TO BE THE DINNER OF ALL THE KIDS")))[1]
+    # short quotes (< 5 words) are ignored
+    assert bd.foreign_quotes('Dice "Ay caramba" en la escena de la cocina.', "es") == []
+    # soft: dropped with --strict only
+    assert sum(map(len, bd.build([make_rec(3, resp=lyrics)])[0].values())) == 1
+    assert sum(map(len, bd.build([make_rec(3, resp=lyrics)], strict=True)[0].values())) == 0
+
+
+TEACHER_ABSTENTIONS = [      # real teacher answers from the manual review
+    'The provided context does not contain the answer to your question.\n\nSource: "E-I-E-I-(Annoyed Grunt)"',
+    "El contexto proporcionado no contiene información sobre qué personaje se disloca la "
+    "mandíbula. \n\nEpisode: 'Homer's Triple Bypass'",
+    'El contexto no contiene la razón por la cual llaman a Homer "Coronel Homer", ya que él '
+    'solo menciona que no es por ser un idiota del ejército ("Because I\'m some dumb-ass army '
+    'guy"). \n\nEpisodio: "Colonel Homer" (Temporada 3).',
+    "El contexto no contiene la respuesta a esa pregunta.",
+    'The provided context does not contain an excuse from Homer for having so many bowling '
+    'balls; he simply avoids answering Marge by saying, "Oh, I\'m not going to lie to you, '
+    'Marge. So long!" and leaving. \n\nSource: "Homer vs. the Eighteenth Amendment"',
+    "El contexto no menciona que Homer anuncie un concurso en la central nuclear; más bien, "
+    'Homer participa en un concurso. \n\nEpisodio: "Homer\'s Enemy" (Temporada 8).',
+    'El contexto proporcionado no contiene la razón exacta por la cual Homer se siente '
+    'avergonzado. (Episodio: "There\'s No Disgrace Like Home")',
+    "Based on the provided context, it is not mentioned what Bart uses as his escape route. "
+    '\n\nSource: "Bart Gets Famous"',
+    "The provided context does not mention Bart speaking to his parents about Sideshow Bob, "
+    'only that he tells them he saw Sideshow Bob. Episode: "Cape Feare".',
+    "The context does not contain the answer to what prize Homer got. "
+    '\n\nSource: "They Saved Lisa\'s Brain" (Season 10)',
+    "El contexto no proporciona esa información; solo menciona que Homer decide llamar a sus "
+    'amigos, pero no especifica a quién. ("Marge on the Lam")',
+    'El contexto no contiene el título específico del libro, ya que Homer solo lo menciona '
+    'como "ese libro de ese tipo en silla de ruedas". \n\nEpisode: Treehouse of Horror VI.',
+    "No hay información sobre eso.", "I don't know the answer.", "No lo sé.",
+]
+
+
+def test_is_abstention_on_teacher_abstentions():
+    for text in TEACHER_ABSTENTIONS:
+        assert bd.is_abstention(text), text
+
+
+def test_is_abstention_is_not_fooled_by_answers_that_say_someone_does_not_know():
+    # this real ANSWER used to be taken for an abstention ("doesn't know")
+    assert not bd.is_abstention(
+        "Once they are back home, Homer says he doesn't know why they ever left in the first "
+        'place. This information comes from the episode "E-I-E-I-(Annoyed Grunt)".')
+    assert not bd.is_abstention("Homer no dice nada sobre eso a Marge: se limita a marcharse.")
+    assert not bd.is_abstention("Homer says there is no problem and leaves. Source: \"Episode 1\"")
+    assert not bd.is_abstention('Homer shouts "the context does not matter!" at Marge in the kitchen.')
+    assert not bd.is_abstention("")
+
+
+def test_only_spanish_and_english_are_supported():
+    assert set(prompts.LANG_NAMES) == {"es", "en"} == set(bd._STOP)
+
+
 def test_soft_flags_and_strict():
     es_abst = "El contexto no contiene la respuesta a eso en el episodio."
     recs = [
@@ -366,3 +504,14 @@ def test_prompt_layout_literal():
                    '[Season 3, "A"]\ntexto A\n\n---\n\n[Season 4, "B"]\ntexto B')
     assert prompts.build_qa_prompt("C", "Q?", "en") == \
         "Context:\n\nC\n\nQuestion: Q?\n\nWrite the answer in English."
+
+
+def test_split_fractions_are_configurable():
+    recs = [make_rec(i, ep=ep) for i, ep in enumerate(range(1, 401))]
+    splits, _ = bd.build(recs, val=0.2, test=0.25)
+    n = sum(map(len, splits.values()))
+    assert 0.12 < len(splits["val"]) / n < 0.28
+    assert 0.17 < len(splits["test"]) / n < 0.33
+    assert 0.40 < len(splits["train"]) / n < 0.60
+    none, _ = bd.build(recs, val=0, test=0)
+    assert len(none["train"]) == 400 and not none["val"] and not none["test"]

@@ -57,7 +57,7 @@ def test_wrong_lang_is_a_hard_flag_and_shows_the_counts():
     r = rec(1, resp=EN_ANSWER)
     assert [x[0]["id"] for x in rv.select([r], "wrong_lang")] == ["id1"]
     text = rv.render(r, "wrong_lang", 1)
-    assert "requested: **es**" in text and "en=" in text and "ca=" in text
+    assert "requested: **es**" in text and "en=" in text and "es=" in text
     assert "```" not in text                      # no chunk needed for language problems
     assert "Verdict: " in text
 

@@ -31,7 +31,8 @@ LEGENDS = {
     "abstained_with_gold": [
         "A = the chunk does NOT answer the question (the question writer's fault)",
         "B = the chunk answers it; the teacher was too cautious",
-        "C = ambiguous / only partly answered"],
+        "C = ambiguous / only partly answered",
+        "D = the teacher ANSWERED; the abstention detector is wrong"],
     "wrong_lang": [
         "A = the answer really is in the wrong language",
         "B = right language; the heuristic is wrong (English quotes, names, short answer...)",

@@ -37,7 +37,7 @@ or the weights). One record per line:
 
 | field | content |
 |---|---|
-| `id`, `task`, `lang` | `qa`; `es` / `en` (also `ca` / `de` are accepted) |
+| `id`, `task`, `lang` | `qa`; `es` or `en` |
 | `system`, `prompt`, `response` | exactly what production sends / what the teacher answered |
 | `meta.question`, `meta.kind` | the synthetic question; `answerable` or `unanswerable` |
 | `meta.gold`, `meta.gold_in_context` | the chunk the question was written from, and whether the retriever returned it (line-range overlap) |
@@ -56,10 +56,14 @@ teacher answered anyway (`*_but_answered`), and `--strict` drops them. Too many
 abstentions would make the student over-abstain: `metrics.py` reports both
 `overconfident` and `abstain agree`.
 
-Question prompt v2 (stored as `meta.question_prompt`) requires self-contained
-questions anchored in a distinctive element of the scene (v1 produced things
-like "What is Marge looking for while talking to Lisa?", which no retriever
-can find). Records without `question_prompt` come from v1.
+Question prompt (version stored as `meta.question_prompt`): v2 requires
+self-contained questions anchored in a distinctive element of the scene (v1
+produced things like "What is Marge looking for while talking to Lisa?", which
+no retriever can find). v3 adds: every name and claim must come from the
+fragment, no false premises, nothing about what the fragment never reveals.
+The hand review of `abstained_with_gold` (16 cases) found mostly bad
+questions, not over-cautious teachers, which motivated v3. Records without
+`question_prompt` come from v1. Keep `abstained_with_gold` dropped.
 
 Questions are written in the target language over the (English) script chunks,
 so the Spanish examples exercise cross-lingual retrieval too: `gold_in_context`
@@ -70,11 +74,13 @@ by language is already a first number for the multilingual table.
 ```bash
 PYTHONPATH=src python -m distill.build_dataset            # keeps soft-flagged
 PYTHONPATH=src python -m distill.build_dataset --strict   # recommended for training
+PYTHONPATH=src python -m distill.build_dataset --strict --val-frac 0.15 --test-frac 0.2   # bigger eval sets
 ```
 
 Writes `train.jsonl`, `val.jsonl`, `test.jsonl` (`messages` format for TRL /
 `apply_chat_template`, plus `meta`). The split is **by episode**, never by
-example: chunks overlap by 5 lines, so a random split would leak. Flags are
+example (`--val-frac`/`--test-frac` are shares of episodes, so the example
+counts are approximate; default 0.1 each): chunks overlap by 5 lines, so a random split would leak. Flags are
 explained at the top of `build_dataset.py`.
 
 ### Reviewing flagged records by hand
@@ -109,7 +115,7 @@ Choosing the student: run the base-model evaluation for each candidate on the
 same 30 validation questions first (a few minutes each), then train the two
 best. Default `unsloth/Qwen3-1.7B` (QLoRA fits a T4 comfortably). Candidates:
 `unsloth/Gemma-3-4b-it` (quality ceiling), `unsloth/Llama-3.2-1B-Instruct`
-(size floor; no Catalan). Qwen3.5 is possible but needs transformers v5 and
+(size floor). Qwen3.5 is possible but needs transformers v5 and
 16-bit LoRA (Unsloth advises against 4-bit for it), and Colab ships neither.
 
 Training loss is only on the answer tokens; examples longer than
