@@ -2,6 +2,7 @@
 
     PYTHONPATH=src python -m distill.plot_distances \
         --data data/distill/teacher_qa.jsonl data/distill/router_questions.jsonl \
+        --langs es \
         --out src/distill/images/distances.png
 
 Accepts SEVERAL data files (mix of gen_teacher and gen_router_questions
@@ -10,12 +11,12 @@ meta.kind in the SAME figures (answerable / unanswerable / general /
 nonrelated). The legacy kind "offtopic" stored in teacher_qa carries NO
 distances in meta.retrieved, so those rows are skipped automatically.
 
-  * rank-1 histogram, one step-fill per class   -> where the distributions
+- rank-1 histogram, one step-fill per class   -> where the distributions
     cross is the natural threshold
-  * rank-1 ECDF per class (zoomable read of the
+- rank-1 ECDF per class (zoomable read of the
     same overlap; with --threshold, marks the chosen cut and prints the
     resulting per-class keep/corpus rates)
-  * box plot of rank 1-3 per class              -> how fast distance grows
+- box plot of rank 1-3 per class              -> how fast distance grows
     with the rank
 
 Also prints a percentile table for ranks 1-3, one block per class, so the
@@ -52,27 +53,36 @@ def read_rows(paths):
                     yield path, json.loads(line)
 
 
-def collect_distances(rows, kinds, min_rank=TOP_K):
-  """kind -> {id: list of distances}.
+def _extract_lang(row, meta):
+    lang = row.get("lang")
+    if lang is None:
+        lang = meta.get("lang")
+    return str(lang).strip().lower() if lang is not None else None
+
+
+def collect_distances(rows, kinds, langs=None, min_rank=TOP_K):
+    """kind -> {id: list of distances}.
 
     Skips chunks without a "distance" key (teacher rows of the old offtopic
     kind store retrieved metadata WITHOUT distances) and drops any question
     with fewer than min_rank measured distances, so a class is never skewed
     by rows that came through a different path."""
-  dists = {}
-  for _, row in rows:
-    meta = row.get("meta") or {}
-    kind = meta.get("kind")
-    if not kind or (kinds and kind not in kinds):
-      continue
-    measured = [
-        float(r["distance"])
-        for r in (meta.get("retrieved") or [])
-        if isinstance(r, dict) and r.get("distance") is not None
-    ]
-    if len(measured) >= min_rank:
-      dists.setdefault(kind, {})[row["id"]] = measured[:min_rank]
-  return dists
+    dists = {}
+    for _, row in rows:
+        meta = row.get("meta") or {}
+        kind = meta.get("kind")
+        if not kind or (kinds and kind not in kinds):
+            continue
+        if langs:
+            lang = _extract_lang(row, meta)
+            if lang not in langs:
+                continue
+        measured = [float(r["distance"]) for r in (meta.get("retrieved") or [])
+                    if isinstance(r, dict) and r.get("distance") is not None]
+        if len(measured) >= min_rank:
+            dists.setdefault(kind, {})[row["id"]] = measured[:min_rank]
+    return dists
+
 
 def percentile(xs, q):
     xs = sorted(xs)
@@ -176,6 +186,8 @@ def main():
                     help="one or more data files (meta.retrieved + meta.kind)")
     ap.add_argument("--kinds", default=None,
                     help="comma-separated subset of meta.kind to plot, e.g. answerable,general")
+    ap.add_argument("--langs", default=None,
+                    help="comma-separated subset of question languages to include, e.g. en or es")
     ap.add_argument("--threshold", type=float, default=None,
                     help="draw this rank-1 threshold and print per-class keep rates")
     ap.add_argument("--out", default="src/distill/images/distances.png")
@@ -185,11 +197,19 @@ def main():
         raise SystemExit("matplotlib is required: pip install matplotlib")
 
     kinds = {k.strip() for k in args.kinds.split(",")} if args.kinds else None
+    langs = {lang.strip().lower() for lang in args.langs.split(",") if lang.strip()} if args.langs else None
     rows = list(read_rows(args.data))
-    dists = collect_distances(rows, kinds)
+    dists = collect_distances(rows, kinds, langs=langs)
     if not dists:
-        found = sorted({str((row.get("meta") or {}).get("kind")) for _, row in rows})
-        raise SystemExit(f"no rows matched; kinds found across the files: {found}")
+        found_kinds = sorted({str((row.get("meta") or {}).get("kind")) for _, row in rows})
+        found_langs = sorted({
+            str(_extract_lang(row, row.get("meta") or {}))
+            for _, row in rows
+            if _extract_lang(row, row.get("meta") or {}) is not None
+        })
+        raise SystemExit(
+            f"no rows matched; kinds found: {found_kinds}, langs found: {found_langs}"
+        )
 
     percentile_table(dists)
     if args.threshold is not None:
