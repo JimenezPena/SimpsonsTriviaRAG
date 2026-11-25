@@ -62,9 +62,48 @@ The gate was tuned on questions written by the same person who wrote the gate:
 its 100% recall on the evaluation set is optimistic. Add real user questions to
 the set as they appear.
 
+## General and off-topic questions: the retrieval-distance policy
+
+`/api/ask` retrieves first. If the best chunk is **farther** than a per-language
+threshold, the question is probably not about the scripts and the router
+(one LLM call) decides: `general` (answered from the model's knowledge, labelled
+as such by the code, not by the model), `offtopic` (polite refusal),
+`metadata` (catalog tool) or `corpus` (back to the RAG). Questions closer than
+the threshold never pay an extra call.
+
+| | es | en |
+|---|---|---|
+| threshold (Chroma distance) | 0.59 (p95 answerable / p05 general) | 0.58 (p90 answerable / p25 general) |
+
+Details worth knowing:
+
+- Override with `ROUTER_DIST_ES`, `ROUTER_DIST_EN`. Unknown language: the larger one.
+- **Refuse guard** (`ROUTER_REFUSE_DIST`, default 0.70, `0` disables): an
+  `offtopic` verdict is honoured only if the best distance is above it; in the
+  0.58-0.70 band the RAG answers (its abstention handles it). Chosen from the
+  pooled percentiles (general p95 = 0.738, nonrelated p5 = 0.754).
+- Searches restricted to a season are not subject to the policy (their
+  distances have another distribution).
+- The keyword gate still runs before retrieval; its decision is reused, so a
+  question never costs two router calls.
+- The request's `lang` is taken as the question's language.
+- Distance does not separate *unanswerable* from *answerable* (that is the
+  abstention job of the RAG); `general` and `answerable` overlap in 0.55-0.65,
+  which is exactly where the LLM decides.
+
+Evaluate it (offline stats are free; the LLM part is cached and limited):
+
+```bash
+PYTHONPATH=src python -m agentic.eval_router --zone data/distill/teacher_qa.jsonl \
+    data/distill/router_questions.jsonl                 # offline: how many cases reach the router
+PYTHONPATH=src python -m agentic.eval_router --zone data/distill/teacher_qa.jsonl \
+    data/distill/router_questions.jsonl --llm --limit 30
+```
+
+The report adds *diverted* (corpus questions wrongly sent to general/offtopic/catalog:
+the harmful error of this policy).
+
 ## Next
 
-`general` (answer from model knowledge, labelled as such, or grounded in an
-external source) and `offtopic` (polite refusal). The route labels are already
-produced and evaluated; the router is also a natural extra task for the LoRA
-student.
+Grounding `general` in an external source, re-calibrating the thresholds on
+more questions, and the router as an extra task for the LoRA student.

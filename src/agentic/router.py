@@ -2,20 +2,22 @@
 
     corpus    answerable from script fragments            -> the existing RAG
     metadata  about the catalog (counts, season/number)   -> a closed tool, answer from a template
-    general   general Simpsons knowledge, not in a script -> (not acted on yet)
-    offtopic  nothing to do with The Simpsons             -> (not acted on yet)
+    general   general Simpsons knowledge, not in a script -> answer from the model, labelled
+    offtopic  nothing to do with The Simpsons             -> polite refusal (guarded, see policy.py)
 
-Only `metadata` changes behaviour so far; every other route, and any failure
-(API error, unparsable output, unknown tool, bad arguments), falls back to the
-current RAG. The router can therefore only ever help.
+Two entry points, both ending in "use the RAG" on any failure (API error,
+unparsable output, unknown tool, bad arguments):
 
-Cost control: a cheap keyword gate runs first; questions with no season /
-episode / counting words go straight to the RAG without an extra LLM call.
+  * answer_if_metadata: before retrieval, behind a cheap keyword gate (season /
+    episode / counting words). Only catalog questions are answered here.
+  * answer_in_zone: after retrieval, only when the best chunk distance is above
+    the per-language threshold (policy.py). Covers general and off-topic
+    questions too; a close best chunk never reaches the router (no extra call).
 """
 import json
 import re
 
-from agentic import tools
+from agentic import answers, tools
 
 ROUTES = ("corpus", "metadata", "general", "offtopic")
 ROUTER_PROMPT_VERSION = 1
@@ -105,11 +107,10 @@ def decide(question, ask, use_gate=True):
     return {**parsed, "raw": raw, "gated_out": False}
 
 
-def answer_if_metadata(question, lang, ask, catalog):
-    """-> {"answer", "sources": [], "route": {...}} when the question is a valid
-    metadata question the tools can answer; None otherwise (use the RAG)."""
-    d = decide(question, ask)
-    if d["route"] != "metadata" or not d["tool"]:
+def answer_from_decision(d, lang, catalog):
+    """Answer a `metadata` decision with its tool, or None (use the RAG) if the
+    decision is not a valid catalog question."""
+    if d["route"] != "metadata" or not d["tool"] or catalog is None:
         return None
     try:
         result = tools.run(d["tool"], d["args"], catalog)
@@ -119,3 +120,48 @@ def answer_if_metadata(question, lang, ask, catalog):
     return {"answer": tools.render(result, lang), "sources": [],
             "route": {"route": "metadata", "tool": d["tool"], "args": d["args"],
                       "ok": result["ok"]}}
+
+
+def answer_if_metadata(question, lang, ask, catalog):
+    """-> {"answer", "sources": [], "route": {...}} when the question is a valid
+    metadata question the tools can answer; None otherwise (use the RAG)."""
+    return answer_from_decision(decide(question, ask), lang, catalog)
+
+
+def answer_in_zone(question, lang, ask, catalog, best=None, refuse_dist=0.0, decision=None):
+    """Called when the best retrieval distance is above the threshold (policy.py).
+    One router call, then:
+      metadata  -> catalog tool (as above)
+      offtopic  -> polite refusal, only if best > refuse_dist (else the RAG)
+      general   -> answer from the model's knowledge, labelled as such
+      corpus / anything else, or any failure -> None: use the RAG
+    `decision`: the router already consulted for this question (the keyword gate
+    ran before retrieval); it is reused so the LLM is never asked twice.
+    """
+    reuse = decision is not None and not decision.get("gated_out")
+    d = decision if reuse else decide(question, ask, use_gate=False)
+    info = {"distance": None if best is None else round(best, 3)}
+    if d["route"] == "metadata":
+        out = answer_from_decision(d, lang, catalog)
+        if out:
+            out["route"].update(info, trigger="distance")
+        return out
+    if d["route"] == "offtopic":
+        if best is not None and best <= refuse_dist:
+            print(f"[router] offtopic verdict but distance {best:.3f} <= {refuse_dist}: using the RAG",
+                  flush=True)
+            return None
+        return {"answer": answers.offtopic_reply(lang), "sources": [],
+                "route": {"route": "offtopic", "trigger": "distance", **info}}
+    if d["route"] == "general":
+        try:
+            text = ask(answers.build_general_prompt(question, lang),
+                       system=answers.GENERAL_SYSTEM, temperature=0.2)
+        except (RuntimeError, OSError, KeyError, IndexError, ValueError) as e:
+            print(f"[router] general answer failed, using the RAG: {str(e)[:160]}", flush=True)
+            return None
+        if not text or not text.strip():
+            return None
+        return {"answer": answers.label_general(text, lang), "sources": [],
+                "route": {"route": "general", "trigger": "distance", **info}}
+    return None

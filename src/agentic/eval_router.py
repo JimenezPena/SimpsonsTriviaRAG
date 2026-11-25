@@ -4,6 +4,9 @@
     PYTHONPATH=src python -m agentic.eval_router --llm --limit 5 # try it on 5 questions first
     PYTHONPATH=src python -m agentic.eval_router --llm           # what production does: gate + LLM
     PYTHONPATH=src python -m agentic.eval_router --llm --ungated # also LLM-route the gated-out ones
+    PYTHONPATH=src python -m agentic.eval_router --zone data/distill/teacher_qa.jsonl \\
+        data/distill/router_questions.jsonl --limit 30           # the questions above the
+                                                                  # distance thresholds, 30 LLM calls
     ... --quiet                                                  # summary only
 
 Valid answers are cached in data/agentic/router_cache.jsonl (git-ignored), keyed by
@@ -19,8 +22,9 @@ arguments, everything else must be left to the RAG.
 Metrics (production behaviour = the router ACTS only when it says `metadata`
 with a valid tool call):
   metadata solved   metadata questions answered with the right tool + arguments
-  false actions     non-metadata questions the router wrongly answered itself
-                    (the harmful error: the RAG would have been used)
+  false actions     non-metadata questions the router wrongly answered from the catalog
+  diverted          corpus questions the router sent to general / off-topic / catalog
+                    (the harmful error: the RAG should have answered them)
   route accuracy    4-way route over the questions that reached the LLM
 """
 import argparse
@@ -31,7 +35,7 @@ import os
 import sys
 import time
 
-from agentic import router, tools
+from agentic import policy, router, tools
 from agentic.catalog import ROOT, norm
 
 DEFAULT_CASES = os.path.join(ROOT, "data", "agentic", "router_eval.jsonl")
@@ -101,6 +105,9 @@ def summarize(rows):
         out["missed_by_gate"] = sum(1 for r in meta if r["decision"] is None)
         out["false_actions"] = (
             sum(1 for r in other if acted(r["decision"])), len(other))
+        corpus = [r for r in rows if r["case"]["route"] == "corpus" and r["decision"] is not None]
+        out["diverted"] = (sum(1 for r in corpus if r["decision"]["route"] in
+                               ("general", "offtopic") or acted(r["decision"])), len(corpus))
         usable = [r for r in judged if r["decision"]["route"] is not None]
         out["route_accuracy"] = (     # an unparsable answer counts as wrong
             sum(r["decision"]["route"] == r["case"]["route"] for r in usable), len(judged))
@@ -133,14 +140,16 @@ def sample(cases, n):
 
 def outcome(row):
     """What production would do with this question and whether that is right.
-    -> (ok, verdict text). Right means: a catalog question is answered with the
-    expected tool and arguments; anything else is left to the RAG."""
+    -> (ok, verdict text). Every route acts now: a catalog question needs the
+    right tool and arguments, a general / off-topic one the matching route, and a
+    corpus one must stay with the RAG (anything else is a diverted question)."""
     c, d = row["case"], row["decision"]
     if d is None:
         if row["gate"]:
             return None, "(gate passed: would call the router LLM; run with --llm)"
-        verdict = "-> RAG (gate: no LLM call)"
-        return c["route"] != "metadata", verdict
+        if c["route"] == "corpus":
+            return True, "-> RAG (gate: no LLM call)"
+        return None, "(decided by the retrieval distance, not by the gate: use --zone)"
     if d["route"] is None:
         raw = " ".join((d["raw"] or "no answer from the API").split())
         return False, f"UNPARSABLE -> RAG | {raw[:200]}"
@@ -149,8 +158,10 @@ def outcome(row):
         good = c["route"] == "metadata" and d["tool"] == c["tool"] \
             and args_match(c["args"], d["args"])
         return good, f"{d['route']} -> answers itself: {call}"
-    good = c["route"] != "metadata"
-    return good, f"{d['route']} -> RAG" + (" (invalid tool call)" if d["route"] == "metadata" else "")
+    good = d["route"] == c["route"]
+    action = {"corpus": "RAG", "general": "general-knowledge answer",
+              "offtopic": "refusal (if distance allows)"}.get(d["route"], "RAG (invalid tool call)")
+    return good, f"{d['route']} -> {action}"
 
 
 def format_cases(rows):
@@ -175,6 +186,8 @@ def format_report(s):
                   "metadata solved (right tool + args): %d/%d" % s["metadata_solved"],
                   f"metadata missed by the gate: {s['missed_by_gate']}",
                   "false actions (wrongly answered from the catalog): %d/%d" % s["false_actions"],
+                  "diverted (corpus questions sent to general / off-topic / catalog): %d/%d"
+                  % s["diverted"],
                   "route accuracy: %d/%d" % s["route_accuracy"],
                   "confusion (expected->predicted): " + json.dumps(s["confusion"])]
     return "\n".join(lines)
@@ -210,6 +223,10 @@ def cached_ask(ask, path):
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--cases", default=DEFAULT_CASES)
+    p.add_argument("--zone", nargs="+", metavar="FILE",
+                   help="evaluate on the questions of these data files (gen_teacher / "
+                        "gen_router_questions records, with distances) that are ABOVE the "
+                        "distance thresholds, i.e. exactly what the router sees; implies --ungated")
     p.add_argument("--llm", action="store_true", help="call the router LLM (uses API quota)")
     p.add_argument("--ungated", action="store_true",
                    help="also route the questions the gate would skip")
@@ -220,7 +237,13 @@ def main(argv=None):
     p.add_argument("--quiet", action="store_true", help="only the summary, not case by case")
     args = p.parse_args(argv)
 
-    cases = load_cases(args.cases)
+    if args.zone:
+        th = policy.thresholds(os.environ)
+        cases, stats = policy.zone_cases(args.zone, th)
+        print(policy.format_stats(stats, th), "\n")
+        args.ungated = True
+    else:
+        cases = load_cases(args.cases)
     cases = sample(cases, args.limit)
     ask = None
     if args.llm:

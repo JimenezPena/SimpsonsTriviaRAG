@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(__file__))   # allow `import trivia_gen`
 
 from flask import Flask, request, jsonify, send_from_directory
 
+from agentic import policy as agentic_policy
 from agentic import router as agentic_router
 from agentic.catalog import Catalog, load_indexed_from_chroma
 import trivia_gen as tg   # reuses: load_vector_store, random_chunk, retrieve,
@@ -50,6 +51,11 @@ def get_store():
 # episodes, which season...) are answered by metadata tools, everything else
 # goes through the RAG exactly as before. Any failure falls back to the RAG.
 ROUTER_ON = os.environ.get("ROUTER", "").strip().lower() in ("1", "on", "true", "yes")
+# retrieval-distance policy (agentic/policy.py): best chunk farther than this ->
+# the router decides general / off-topic / corpus; override with ROUTER_DIST_ES,
+# ROUTER_DIST_EN and ROUTER_REFUSE_DIST
+ROUTER_DIST = agentic_policy.thresholds(os.environ)
+ROUTER_REFUSE_DIST = agentic_policy.refuse_distance(os.environ)
 _CATALOG = None
 _CATALOG_TRIED = False
 
@@ -295,10 +301,11 @@ def api_ask():
     if not question:
         return jsonify({"error": "empty question"}), 400
 
+    decision = None                          # the router's verdict, if it was consulted
     if ROUTER_ON and get_catalog() is not None:
         try:
-            routed = agentic_router.answer_if_metadata(question, lang, tg.ask_llm,
-                                                       get_catalog())
+            decision = agentic_router.decide(question, tg.ask_llm)   # keyword-gated
+            routed = agentic_router.answer_from_decision(decision, lang, get_catalog())
         except Exception as e:               # the router must never block the RAG
             routed = None
             print(f"[router] failed, using the RAG: {e}", flush=True)
@@ -311,6 +318,20 @@ def api_ask():
         return jsonify({"answer": "No he encontrado nada para esa pregunta."
                         if lang == "es" else "Nothing found for that question.",
                         "sources": []})
+
+    best = agentic_policy.best_distance(results)
+    # season-restricted searches have a different distance distribution: skip the policy
+    if ROUTER_ON and season is None and agentic_policy.reaches_router(best, lang, ROUTER_DIST):
+        try:
+            routed = agentic_router.answer_in_zone(question, lang, tg.ask_llm, get_catalog(),
+                                                   best, ROUTER_REFUSE_DIST, decision=decision)
+        except Exception as e:               # the router must never block the RAG
+            routed = None
+            print(f"[router] zone failed, using the RAG: {e}", flush=True)
+        print(f"[router] best distance {best:.3f} > {agentic_policy.threshold_for(lang, ROUTER_DIST)} "
+              f"({lang}) -> {routed['route']['route'] if routed else 'RAG'}", flush=True)
+        if routed:
+            return jsonify(routed)
 
     sent = results[:tg.TOP_K]
     context = "\n\n---\n\n".join(

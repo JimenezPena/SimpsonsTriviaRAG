@@ -254,8 +254,12 @@ def test_app_py_wiring_is_optional_and_falls_back():
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     src = open(os.path.join(here, "src", "app.py"), encoding="utf-8").read()
     assert 'os.environ.get("ROUTER"' in src and "ROUTER_ON and get_catalog() is not None" in src
-    i, j = src.index("answer_if_metadata"), src.index("tg.retrieve(get_store()")
-    assert i < j and "except Exception" in src[i - 200:j]             # tried before RAG, never fatal
+    gate, retrieve = src.index("agentic_router.decide("), src.index("tg.retrieve(get_store()")
+    zone = src.index("agentic_router.answer_in_zone(")
+    assert gate < retrieve < zone                      # keyword gate, then retrieval, then the distance policy
+    assert "except Exception" in src[gate - 200:retrieve] and "except Exception" in src[zone - 200:zone + 400]
+    assert "season is None and agentic_policy.reaches_router" in src   # season-filtered searches skip it
+    assert "decision=decision" in src                  # one router call per question at most
 
 
 def test_report_survives_a_sample_without_non_metadata_questions():
